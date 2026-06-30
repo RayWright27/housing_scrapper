@@ -1,0 +1,5 @@
+# Phase 1 dependencies only (storage + change detection + tests).
+# Later phases add: playwright, fastapi, uvicorn, python-telegram-bot,
+# apscheduler — do not add them until their build-order phase.
+python-dotenv>=1.0
+pytest>=8.0

@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data — SQLite DB and anything under data/ (never committed)
+data/
