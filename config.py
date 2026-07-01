@@ -50,10 +50,30 @@ class Settings:
     proxy_url: str | None
     telegram_bot_token: str | None
     telegram_chat_id: str | None
+    # Scraping etiquette (§7): randomized delay range between network hits,
+    # media blocking (faster/politer), and a small cap on search pages.
+    scrape_delay_min_sec: float
+    scrape_delay_max_sec: float
+    block_media: bool
+    max_search_pages: int
 
     @property
     def telegram_enabled(self) -> bool:
         return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+
+def _get_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return float(raw)
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_settings() -> Settings:
@@ -66,6 +86,10 @@ def load_settings() -> Settings:
         proxy_url=_get_optional("PROXY_URL"),
         telegram_bot_token=_get_optional("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_get_optional("TELEGRAM_CHAT_ID"),
+        scrape_delay_min_sec=_get_float("SCRAPE_DELAY_MIN_SEC", 2.0),
+        scrape_delay_max_sec=_get_float("SCRAPE_DELAY_MAX_SEC", 5.0),
+        block_media=_get_bool("BLOCK_MEDIA", True),
+        max_search_pages=_get_int("MAX_SEARCH_PAGES", 1),
     )
 
 

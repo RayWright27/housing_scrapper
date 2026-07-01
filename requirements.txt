@@ -1,5 +1,9 @@
-# Phase 1 dependencies only (storage + change detection + tests).
-# Later phases add: playwright, fastapi, uvicorn, python-telegram-bot,
-# apscheduler — do not add them until their build-order phase.
+# Runtime + test dependencies through phase 3 (storage, normalize, CIAN adapter).
+# Later phases add: fastapi, uvicorn, python-telegram-bot, apscheduler
+# — do not add them until their build-order phase.
 python-dotenv>=1.0
 pytest>=8.0
+# Phase 3: headless Chromium for anti-bot-tolerant fetching (§3, §7).
+# Fetch layer only; pure parse functions and all tests stay Playwright-free.
+# One-time browser install: `playwright install chromium`.
+playwright>=1.40
