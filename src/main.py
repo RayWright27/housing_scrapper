@@ -141,13 +141,31 @@ def cmd_add(args: argparse.Namespace) -> int:
 def cmd_run_once(args: argparse.Namespace) -> int:
     from config import settings
     from src.adapters.cian import CianAdapter
+    from src.notify.telegram import ListingMeta, TelegramNotifier
+    from src.storage import repository as repo
     from src.tracker import run_once
 
     conn = _open_db()
-    with CianAdapter() as cian:  # live adapter constructed here only
-        adapters = {"cian": cian}
-        events = run_once(adapters, conn, settings)
-    conn.close()
+    try:
+        with CianAdapter() as cian:  # live adapter constructed here only
+            adapters = {"cian": cian}
+            events = run_once(adapters, conn, settings)
+
+        # Deliver notifications AFTER persistence, while the DB is still open so
+        # the notifier's injected get_meta can read listing details (§9b). The
+        # notifier is built only here, at the CLI seam — never inside tracker.py.
+        def get_meta(listing_id: int) -> ListingMeta | None:
+            row = repo.get_listing(conn, listing_id)
+            if row is None:
+                return None
+            return ListingMeta(
+                rooms=row["rooms"], area_total=row["area_total"],
+                title=row["title"], address=row["address"],
+            )
+
+        TelegramNotifier.from_settings(settings).notify(events, get_meta)
+    finally:
+        conn.close()
 
     if not events:
         print("no events (nothing new, no price changes, no delistings)")
@@ -163,6 +181,39 @@ def cmd_run_once(args: argparse.Namespace) -> int:
                   f"{ev.price:,}  {ev.url}")
         else:
             print(f"  DELISTED       {ev.source} {ev.external_id}  {ev.url}")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# notify-test (dev/debug): send one sample of each event type to your chat
+# --------------------------------------------------------------------------- #
+def cmd_notify_test(args: argparse.Namespace) -> int:
+    from config import settings
+    from src.notify.telegram import ListingMeta, TelegramNotifier
+    from src.tracker import Event, EventType
+
+    notifier = TelegramNotifier.from_settings(settings)
+    if not notifier.enabled:
+        print("Telegram is DISABLED — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID "
+              "in your .env, then re-run. Nothing sent.")
+        return 1
+
+    url = "https://spb.cian.ru/sale/flat/328700780/"
+    samples = [
+        Event(type=EventType.NOW_TRACKING, source="cian", listing_id=1,
+              external_id="328700780", url=url, note="sample flat",
+              price=14_800_000),
+        Event(type=EventType.PRICE_CHANGED, source="cian", listing_id=1,
+              external_id="328700780", url=url, note="sample flat",
+              old_price=14_800_000, new_price=14_000_000, delta=-800_000,
+              percent=-5.405),
+        Event(type=EventType.DELISTED, source="cian", listing_id=1,
+              external_id="328700780", url=url, note="sample flat"),
+    ]
+    meta = ListingMeta(rooms=2, area_total=56.6, title="2-room flat", address=None)
+    notifier.notify(samples, lambda _lid: meta)
+    print(f"sent {len(samples)} sample message(s) to your configured chat "
+          "(check Telegram; failures are logged above).")
     return 0
 
 
@@ -194,6 +245,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run-once", help="run one tracking pass and print events")
     r.set_defaults(func=cmd_run_once)
+
+    n = sub.add_parser("notify-test", help="[dev] send one sample Telegram message per event type")
+    n.set_defaults(func=cmd_notify_test)
 
     return parser
 

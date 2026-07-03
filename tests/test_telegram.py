@@ -1,0 +1,159 @@
+"""Telegram notifier tests — offline only, fake transport, no real network."""
+
+from __future__ import annotations
+
+from src.notify.telegram import (
+    ListingMeta,
+    TelegramNotifier,
+    format_delisted,
+    format_now_tracking,
+    format_price_changed,
+)
+from src.tracker import Event, EventType
+
+URL = "https://spb.cian.ru/sale/flat/1/"
+META = ListingMeta(rooms=2, area_total=56.6, title="2-room", address=None)
+
+
+def N(text: str) -> str:
+    """Normalize non-breaking spaces to plain spaces for readable assertions."""
+    return text.replace(" ", " ")
+
+
+def price_changed(delta_down: bool = True) -> Event:
+    if delta_down:
+        return Event(type=EventType.PRICE_CHANGED, source="cian", listing_id=1,
+                     external_id="1", url=URL, note="my flat",
+                     old_price=14_800_000, new_price=14_000_000,
+                     delta=-800_000, percent=-5.405)
+    return Event(type=EventType.PRICE_CHANGED, source="cian", listing_id=1,
+                 external_id="1", url=URL, note="my flat",
+                 old_price=10_000_000, new_price=11_000_000,
+                 delta=1_000_000, percent=10.0)
+
+
+def now_tracking(price: int = 14_800_000) -> Event:
+    return Event(type=EventType.NOW_TRACKING, source="cian", listing_id=1,
+                 external_id="1", url=URL, note="my flat", price=price)
+
+
+def delisted() -> Event:
+    return Event(type=EventType.DELISTED, source="cian", listing_id=1,
+                 external_id="1", url=URL, note="my flat")
+
+
+class FakeTransport:
+    """Records the texts it is asked to send; can be told to fail."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.sent: list[str] = []
+        self.fail = fail
+
+    def __call__(self, text: str) -> None:
+        self.sent.append(text)
+        if self.fail:
+            raise RuntimeError("simulated telegram failure")
+
+
+def _notifier(transport, *, notify_on_new=True, max_attempts=2):
+    return TelegramNotifier("tok", "chat", notify_on_new=notify_on_new,
+                            transport=transport, max_attempts=max_attempts,
+                            retry_delay=0)
+
+
+# --------------------------------------------------------------------------- #
+# formatting
+# --------------------------------------------------------------------------- #
+def test_price_changed_down_has_math_direction_and_link() -> None:
+    text = N(format_price_changed(price_changed(delta_down=True), META))
+    assert "↓" in text
+    assert "14 800 000 ₽" in text and "14 000 000 ₽" in text   # separators
+    assert "-800 000 ₽" in text                                # delta rubles
+    assert "-5.4%" in text                                     # percent
+    assert '<a href="https://spb.cian.ru/sale/flat/1/">' in text
+    assert "2-room · 56.6 m² · «my flat»" in text
+
+
+def test_price_changed_up_uses_up_arrow_and_positive_signs() -> None:
+    text = N(format_price_changed(price_changed(delta_down=False), META))
+    assert "↑" in text
+    assert "+1 000 000 ₽" in text
+    assert "+10.0%" in text
+
+
+def test_now_tracking_includes_rounded_price_per_m2() -> None:
+    text = N(format_now_tracking(now_tracking(14_800_000), META))
+    # 14_800_000 / 56.6 = 261_484.1... -> rounded
+    assert "261 484 ₽/m²" in text
+    assert "14 800 000 ₽" in text
+
+
+def test_now_tracking_omits_price_per_m2_when_area_missing() -> None:
+    text = N(format_now_tracking(now_tracking(), ListingMeta(rooms=2, area_total=None)))
+    assert "/m²" not in text
+    assert "14 800 000 ₽" in text
+
+
+def test_studio_and_missing_meta_label_gracefully() -> None:
+    studio = format_now_tracking(now_tracking(), ListingMeta(rooms=0, area_total=30.0))
+    assert "studio" in studio
+    no_meta = format_now_tracking(now_tracking(), None)
+    assert "«my flat»" in no_meta  # falls back to the note
+
+
+def test_delisted_is_neutral_and_does_not_assert_sold() -> None:
+    text = format_delisted(delisted(), META)
+    assert "may be sold or withdrawn" in text
+    assert "open on CIAN" in text
+    # neutral: never states it as a fact
+    assert "sold." not in text.lower()
+
+
+def test_special_characters_are_escaped() -> None:
+    ev = Event(type=EventType.NOW_TRACKING, source="cian", listing_id=1,
+               external_id="1", url=URL, note="A & B <script> \"x\"", price=1_000_000)
+    text = format_now_tracking(ev, ListingMeta(rooms=1, area_total=20.0))
+    assert "&amp;" in text and "&lt;script&gt;" in text
+    assert "<script>" not in text  # raw tag must not survive into the message
+
+
+# --------------------------------------------------------------------------- #
+# send layer
+# --------------------------------------------------------------------------- #
+def test_disabled_notifier_is_a_silent_no_op() -> None:
+    transport = FakeTransport()
+    # No token/chat id -> disabled. Even with a transport, nothing is sent.
+    notifier = TelegramNotifier(None, None, transport=transport)
+    assert notifier.enabled is False
+    notifier.notify([price_changed(), delisted()], lambda _l: META)  # must not raise
+    assert transport.sent == []
+
+
+def test_relevant_events_are_sent_with_formatted_text() -> None:
+    transport = FakeTransport()
+    _notifier(transport).notify([price_changed()], lambda _l: META)
+    assert len(transport.sent) == 1
+    assert "Price changed" in transport.sent[0]
+
+
+def test_now_tracking_suppressed_when_notify_on_new_false() -> None:
+    transport = FakeTransport()
+    _notifier(transport, notify_on_new=False).notify(
+        [now_tracking(), price_changed()], lambda _l: META
+    )
+    # only the price change goes out; the new-listing event is skipped
+    assert len(transport.sent) == 1
+    assert "Price changed" in transport.sent[0]
+
+
+def test_send_failure_is_swallowed_and_retried_but_never_raises() -> None:
+    transport = FakeTransport(fail=True)
+    notifier = _notifier(transport, max_attempts=2)
+    notifier.notify([price_changed()], lambda _l: META)  # must NOT raise
+    assert len(transport.sent) == 2  # bounded retry: attempted twice, then gave up
+
+
+def test_get_meta_none_still_sends() -> None:
+    transport = FakeTransport()
+    _notifier(transport).notify([price_changed()], lambda _l: None)
+    assert len(transport.sent) == 1  # falls back to note-only label, still delivers

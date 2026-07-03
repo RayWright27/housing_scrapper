@@ -59,6 +59,9 @@ class Settings:
     # Change detection (§8.7): mark a listing delisted only after it has been
     # missing this many consecutive runs — guards against a transient block.
     delist_after_misses: int
+    # Notifications: also push a Telegram message on a newly-tracked listing
+    # (NOW_TRACKING), not only on price changes/delistings.
+    notify_on_new: bool
 
     @property
     def telegram_enabled(self) -> bool:
@@ -94,6 +97,7 @@ def load_settings() -> Settings:
         block_media=_get_bool("BLOCK_MEDIA", True),
         max_search_pages=_get_int("MAX_SEARCH_PAGES", 1),
         delist_after_misses=_get_int("DELIST_AFTER_MISSES", 3),
+        notify_on_new=_get_bool("NOTIFY_ON_NEW", True),
     )
 
 
