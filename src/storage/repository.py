@@ -124,6 +124,96 @@ def list_listings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM listings ORDER BY id").fetchall())
 
 
+def get_listing(conn: sqlite3.Connection, listing_id: int) -> sqlite3.Row | None:
+    """Return a single listing row by internal id, or ``None``."""
+    return conn.execute(
+        "SELECT * FROM listings WHERE id = ?", (listing_id,)
+    ).fetchone()
+
+
+# --------------------------------------------------------------------------- #
+# source <-> listing links + consecutive-miss counter (drives delisting, §8.7)
+# --------------------------------------------------------------------------- #
+def link_source_listing(
+    conn: sqlite3.Connection, tracked_source_id: int, listing_id: int
+) -> None:
+    """Record that a source produced a listing this run; reset its miss counter.
+
+    Idempotent: creates the (source, listing) link if absent, and on every
+    sighting resets ``consecutive_misses`` to 0 and re-activates the link.
+    """
+    conn.execute(
+        """
+        INSERT INTO source_listings (tracked_source_id, listing_id,
+                                     consecutive_misses, is_linked)
+        VALUES (?, ?, 0, 1)
+        ON CONFLICT (tracked_source_id, listing_id) DO UPDATE SET
+            consecutive_misses = 0,
+            is_linked = 1
+        """,
+        (tracked_source_id, listing_id),
+    )
+    conn.commit()
+
+
+def get_active_links_for_source(
+    conn: sqlite3.Connection, tracked_source_id: int
+) -> list[sqlite3.Row]:
+    """Return the still-linked (is_linked=1) rows for a tracked source."""
+    return list(
+        conn.execute(
+            """
+            SELECT tracked_source_id, listing_id, consecutive_misses, is_linked
+            FROM source_listings
+            WHERE tracked_source_id = ? AND is_linked = 1
+            ORDER BY listing_id
+            """,
+            (tracked_source_id,),
+        ).fetchall()
+    )
+
+
+def increment_miss(
+    conn: sqlite3.Connection, tracked_source_id: int, listing_id: int
+) -> int:
+    """Increment and return the consecutive-miss counter for a link."""
+    conn.execute(
+        """
+        UPDATE source_listings SET consecutive_misses = consecutive_misses + 1
+        WHERE tracked_source_id = ? AND listing_id = ?
+        """,
+        (tracked_source_id, listing_id),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT consecutive_misses FROM source_listings
+        WHERE tracked_source_id = ? AND listing_id = ?
+        """,
+        (tracked_source_id, listing_id),
+    ).fetchone()
+    return int(row["consecutive_misses"])
+
+
+def delist_link(
+    conn: sqlite3.Connection, tracked_source_id: int, listing_id: int
+) -> None:
+    """Delist a listing from a source: unlink it and mark the listing inactive.
+
+    A later reappearance re-activates the listing via :func:`upsert_listing`
+    and re-links it via :func:`link_source_listing`.
+    """
+    conn.execute(
+        """
+        UPDATE source_listings SET is_linked = 0
+        WHERE tracked_source_id = ? AND listing_id = ?
+        """,
+        (tracked_source_id, listing_id),
+    )
+    conn.execute("UPDATE listings SET is_active = 0 WHERE id = ?", (listing_id,))
+    conn.commit()
+
+
 def record_price(
     conn: sqlite3.Connection,
     listing_id: int,

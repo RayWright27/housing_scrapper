@@ -56,6 +56,9 @@ class Settings:
     scrape_delay_max_sec: float
     block_media: bool
     max_search_pages: int
+    # Change detection (§8.7): mark a listing delisted only after it has been
+    # missing this many consecutive runs — guards against a transient block.
+    delist_after_misses: int
 
     @property
     def telegram_enabled(self) -> bool:
@@ -90,6 +93,7 @@ def load_settings() -> Settings:
         scrape_delay_max_sec=_get_float("SCRAPE_DELAY_MAX_SEC", 5.0),
         block_media=_get_bool("BLOCK_MEDIA", True),
         max_search_pages=_get_int("MAX_SEARCH_PAGES", 1),
+        delist_after_misses=_get_int("DELIST_AFTER_MISSES", 3),
     )
 
 

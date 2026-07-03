@@ -44,3 +44,15 @@ CREATE TABLE IF NOT EXISTS price_history (
 
 CREATE INDEX IF NOT EXISTS idx_price_history_listing_observed
     ON price_history (listing_id, observed_at);
+
+-- Which listing each tracked_source produced, plus the consecutive-miss counter
+-- that drives delisting (§8.7). A search source links to many listings; a
+-- listing source to one. Operational state (like listings.is_active), not a
+-- derived value. A pair goes is_linked=0 once delisted from that source.
+CREATE TABLE IF NOT EXISTS source_listings (
+    tracked_source_id  INTEGER NOT NULL REFERENCES tracked_sources (id),
+    listing_id         INTEGER NOT NULL REFERENCES listings (id),
+    consecutive_misses INTEGER NOT NULL DEFAULT 0,
+    is_linked          INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (tracked_source_id, listing_id)
+);

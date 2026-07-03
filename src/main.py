@@ -1,13 +1,17 @@
 """Realty Tracker CLI entrypoint.
 
-Phase 3 provides two DEV/DEBUG commands so the CIAN adapter can be smoke-tested
-without the tracker (which is a later phase):
+Dev/debug commands (smoke-test the adapter without the tracker):
 
     python -m src.main fetch   --source cian --url "<listing-or-search-url>"
     python -m src.main capture --source cian --url "<url>" --out <path>
 
-Other §11 commands (init-db, add, run-once, run, serve) belong to their own
-build-order phases and are intentionally not implemented yet.
+Operational commands:
+
+    python -m src.main init-db
+    python -m src.main add --source cian --url "<url>" --kind listing --note "..."
+    python -m src.main run-once
+
+Remaining §11 commands (run, serve) belong to their own build-order phases.
 """
 
 from __future__ import annotations
@@ -29,6 +33,16 @@ def _get_adapter(source: str):
 
         return CianAdapter()
     raise SystemExit(f"unknown/unsupported source: {source!r} (have: {sorted(_ADAPTERS)})")
+
+
+def _open_db():
+    """Open the configured DB and ensure the schema exists (idempotent)."""
+    from config import settings
+    from src.storage.db import bootstrap, connect
+
+    conn = connect(settings.db_path)
+    bootstrap(conn)
+    return conn
 
 
 # --------------------------------------------------------------------------- #
@@ -94,6 +108,64 @@ def cmd_capture(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# init-db: create the database file from the schema
+# --------------------------------------------------------------------------- #
+def cmd_init_db(args: argparse.Namespace) -> int:
+    from config import settings
+
+    conn = _open_db()
+    conn.close()
+    print(f"database ready at {settings.db_path}")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# add: register one listing/search URL in tracked_sources
+# --------------------------------------------------------------------------- #
+def cmd_add(args: argparse.Namespace) -> int:
+    from src.storage import repository as repo
+
+    conn = _open_db()
+    tracked_id = repo.add_tracked_source(
+        conn, source=args.source, url=args.url, kind=args.kind, note=args.note
+    )
+    conn.close()
+    print(f"added tracked_source #{tracked_id}: {args.source} {args.kind} {args.url}")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# run-once: one full tracking pass. The ONLY place the live adapter is built.
+# --------------------------------------------------------------------------- #
+def cmd_run_once(args: argparse.Namespace) -> int:
+    from config import settings
+    from src.adapters.cian import CianAdapter
+    from src.tracker import run_once
+
+    conn = _open_db()
+    with CianAdapter() as cian:  # live adapter constructed here only
+        adapters = {"cian": cian}
+        events = run_once(adapters, conn, settings)
+    conn.close()
+
+    if not events:
+        print("no events (nothing new, no price changes, no delistings)")
+        return 0
+    print(f"{len(events)} event(s):\n")
+    for ev in events:
+        if ev.type.value == "price_changed":
+            print(f"  PRICE_CHANGED  {ev.source} {ev.external_id}: "
+                  f"{ev.old_price:,} -> {ev.new_price:,} ({ev.delta:+,}, "
+                  f"{ev.percent:+.1f}%)  {ev.url}")
+        elif ev.type.value == "now_tracking":
+            print(f"  NOW_TRACKING   {ev.source} {ev.external_id}: "
+                  f"{ev.price:,}  {ev.url}")
+        else:
+            print(f"  DELISTED       {ev.source} {ev.external_id}  {ev.url}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="src.main", description="Realty Tracker CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -109,6 +181,19 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--url", required=True)
     c.add_argument("--out", required=True)
     c.set_defaults(func=cmd_capture)
+
+    i = sub.add_parser("init-db", help="create the database from the schema")
+    i.set_defaults(func=cmd_init_db)
+
+    a = sub.add_parser("add", help="register a listing/search URL to track")
+    a.add_argument("--source", required=True, choices=sorted(_ADAPTERS))
+    a.add_argument("--url", required=True)
+    a.add_argument("--kind", default="listing", choices=("listing", "search"))
+    a.add_argument("--note", default=None)
+    a.set_defaults(func=cmd_add)
+
+    r = sub.add_parser("run-once", help="run one tracking pass and print events")
+    r.set_defaults(func=cmd_run_once)
 
     return parser
 
