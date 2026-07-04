@@ -24,7 +24,7 @@ from pathlib import Path
 
 logger = logging.getLogger("realty.cli")
 
-_ADAPTERS = {"cian"}
+_ADAPTERS = {"cian", "avito"}
 
 
 def _get_adapter(source: str):
@@ -32,6 +32,10 @@ def _get_adapter(source: str):
         from src.adapters.cian import CianAdapter
 
         return CianAdapter()
+    if source == "avito":
+        from src.adapters.avito import AvitoAdapter
+
+        return AvitoAdapter()
     raise SystemExit(f"unknown/unsupported source: {source!r} (have: {sorted(_ADAPTERS)})")
 
 
@@ -89,9 +93,10 @@ def _print_raw(raw) -> None:
 # capture (dev/debug): save the raw page payload, redacting personal data first
 # --------------------------------------------------------------------------- #
 def cmd_capture(args: argparse.Namespace) -> int:
+    from src.adapters.avito import redact as avito_redact
     from src.adapters.cian import redact as cian_redact
 
-    redactors = {"cian": cian_redact}
+    redactors = {"cian": cian_redact, "avito": avito_redact}
     adapter = _get_adapter(args.source)
     with adapter:
         html, final_url = adapter.fetch_raw(args.url)
@@ -188,6 +193,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 def cmd_run_once(args: argparse.Namespace) -> int:
     from config import settings
+    from src.adapters.avito import AvitoAdapter
     from src.adapters.cian import CianAdapter
     from src.notify.telegram import ListingMeta, TelegramNotifier
     from src.storage import repository as repo
@@ -195,8 +201,9 @@ def cmd_run_once(args: argparse.Namespace) -> int:
 
     conn = _open_db()
     try:
-        with CianAdapter() as cian:  # live adapter constructed here only
-            adapters = {"cian": cian}
+        # live adapters constructed here only (one persistent browser each)
+        with CianAdapter() as cian, AvitoAdapter() as avito:
+            adapters = {"cian": cian, "avito": avito}
             events = run_once(adapters, conn, settings)
 
         # Deliver notifications AFTER persistence, while the DB is still open so

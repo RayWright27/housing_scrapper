@@ -150,7 +150,11 @@ def build_production_app():
             from src.adapters.cian import CianAdapter
             with CianAdapter() as adapter:  # sync Playwright; endpoint is threadpooled
                 yield adapter
+        elif source == "avito":
+            from src.adapters.avito import AvitoAdapter
+            with AvitoAdapter() as adapter:
+                yield adapter
         else:
-            yield None  # e.g. avito — adapter arrives in phase 8
+            yield None
 
     return create_app(get_conn=get_conn, build_adapter=build_adapter, settings=settings)

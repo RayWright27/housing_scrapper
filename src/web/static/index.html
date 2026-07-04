@@ -319,8 +319,7 @@ async function addTracked(){
     const r=await fetch("/api/tracked",{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({url,note})});
     const body=await r.json();
     if(!r.ok){ msg.textContent = r.status===400 ? t("err_unknown_host") : t("err_generic")(body.detail||""); return; }
-    msg.textContent = body.fetched>0 ? t("add_ok_fetched")(body.fetched)
-      : (body.source==="avito" ? t("add_unavailable")(body.source) : t("add_ok_none"));
+    msg.textContent = body.fetched>0 ? t("add_ok_fetched")(body.fetched) : t("add_ok_none");
     document.querySelector("input[name=url]").value=""; document.querySelector("input[name=note]").value="";
     await loadAll();
   }catch(e){ msg.textContent=t("err_generic")(e.message); }
