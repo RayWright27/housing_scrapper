@@ -7,3 +7,8 @@ pytest>=8.0
 # Fetch layer only; pure parse functions and all tests stay Playwright-free.
 # One-time browser install: `playwright install chromium`.
 playwright>=1.40
+# Phase 6 (web dashboard, §9a): local read/manage UI. Loopback only.
+fastapi>=0.110
+uvicorn>=0.29
+# Required by FastAPI's TestClient (used only in the offline dashboard tests).
+httpx>=0.27

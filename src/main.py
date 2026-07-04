@@ -265,6 +265,21 @@ def cmd_notify_test(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# serve: start the local web dashboard (loopback only, §9a/§10)
+# --------------------------------------------------------------------------- #
+def cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from config import settings
+    from src.web.app import build_production_app
+
+    app = build_production_app()
+    print(f"dashboard on http://{settings.web_host}:{settings.web_port}  (Ctrl+C to stop)")
+    uvicorn.run(app, host=settings.web_host, port=settings.web_port, log_level="info")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="src.main", description="Realty Tracker CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -305,6 +320,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     n = sub.add_parser("notify-test", help="[dev] send one sample Telegram message per event type")
     n.set_defaults(func=cmd_notify_test)
+
+    sv = sub.add_parser("serve", help="start the local web dashboard")
+    sv.set_defaults(func=cmd_serve)
 
     return parser
 

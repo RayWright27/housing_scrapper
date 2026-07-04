@@ -20,7 +20,10 @@ def connect(db_path: str = ":memory:") -> sqlite3.Connection:
     """
     if db_path != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    # check_same_thread=False: the web server runs sync endpoints in a threadpool,
+    # so a connection may be used from a worker thread. This is a single-user
+    # loopback tool; connections are not shared concurrently across threads.
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn

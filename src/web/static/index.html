@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realty Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  /* Light theme (default) */
+  :root { --bg:#f4f6fb; --card:#ffffff; --line:#e2e6f0; --fg:#1a1f36; --muted:#5a6485;
+          --up:#d64545; --down:#1f9e5f; --accent:#3b6ef5; --dot-off:#c7cde0; --grid:#eceff6; }
+  html[data-theme="dark"] { --bg:#0f1220; --card:#1a1f36; --line:#2a3157; --fg:#e8ecff;
+          --muted:#9aa4d4; --up:#ff6b6b; --down:#4dd08a; --accent:#5b8cff; --dot-off:#333a5c; --grid:#222a4a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:14px; color:var(--muted); margin:0 0 8px; }
+  .wrap { max-width:1100px; margin:0 auto; padding:18px; }
+  .top { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .toolbar { display:flex; gap:8px; align-items:center; }
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:14px 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card .n { font-size:26px; font-weight:700; } .card .l { color:var(--muted); font-size:12px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:16px; margin-bottom:20px; }
+  input, select, button { font:inherit; color:var(--fg); background:var(--bg);
+           border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  button.primary { background:var(--accent); border:none; color:#fff; cursor:pointer; font-weight:600; }
+  button.primary:disabled { opacity:.6; cursor:progress; }
+  .icon { cursor:pointer; padding:6px 9px; }
+  .addrow { display:flex; gap:8px; flex-wrap:wrap; }
+  .addrow input[name=url] { flex:1; min-width:240px; }
+  .msg { margin-top:8px; font-size:13px; color:var(--muted); min-height:18px; }
+  table { width:100%; border-collapse:collapse; margin-top:12px; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  tr.delisted { opacity:.45; }
+  .badge { font-size:11px; padding:2px 6px; border-radius:6px; background:var(--line); color:var(--muted); }
+  .up { color:var(--up); } .down { color:var(--down); } .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .x { color:var(--muted); cursor:pointer; border:none; background:none; font-size:16px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+  .chip { font-size:12px; padding:4px 8px; border-radius:20px; border:1px solid var(--line);
+          cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px; }
+  .chip.on { border-color:var(--accent); }
+  .chip .dot { width:9px; height:9px; border-radius:50%; }
+  .controls { display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .muted { color:var(--muted); } .empty { color:var(--muted); padding:16px 0; }
+  .detail dl { display:grid; grid-template-columns:auto auto; gap:4px 18px; margin:0; }
+  .detail dt { color:var(--muted); } .detail dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>🏠 Realty Tracker <span class="muted" style="font-size:12px" id="subtitle"></span></h1>
+    <div class="toolbar">
+      <select id="lang"><option value="ru">RU</option><option value="en">EN</option></select>
+      <button class="icon" id="themeBtn" title="theme"></button>
+    </div>
+  </div>
+
+  <!-- 1. summary strip -->
+  <div class="cards" id="cards"></div>
+
+  <!-- 2. tracking section -->
+  <div class="panel">
+    <h2 id="h_tracking"></h2>
+    <div class="addrow">
+      <input name="url" autocomplete="off">
+      <input name="note" style="width:180px">
+      <button class="primary" id="addBtn"></button>
+    </div>
+    <div class="msg" id="addMsg"></div>
+    <div id="tableWrap"></div>
+  </div>
+
+  <!-- 3. chart section -->
+  <div class="panel">
+    <h2 id="h_history"></h2>
+    <div class="chips" id="chips"></div>
+    <div class="controls">
+      <label><span id="lbl_range"></span>
+        <select id="range"><option value="all"></option><option value="90d"></option><option value="30d"></option></select>
+      </label>
+      <label><span id="lbl_yaxis"></span>
+        <select id="ymode"><option value="rub"></option><option value="m2"></option><option value="pct"></option></select>
+      </label>
+      <span class="muted" id="chartHint"></span>
+    </div>
+    <canvas id="chart" height="120"></canvas>
+  </div>
+
+  <!-- 4. detail panel -->
+  <div class="panel detail" id="detail"></div>
+</div>
+
+<script>
+// --------------------------------------------------------------------------- //
+// i18n (Russian default) + theme (light default)
+// --------------------------------------------------------------------------- //
+const I18N = {
+  ru: {
+    subtitle:"— локальная панель", card_total:"Всего", card_active:"Активные",
+    card_delisted:"Сняты", card_changes7d:"Изменений цены (7д)",
+    h_tracking:"Отслеживание", ph_url:"Вставьте ссылку на объявление или поиск CIAN…",
+    ph_note:"Заметка (необязательно)", btn_add:"Добавить", btn_fetching:"Загрузка…",
+    msg_enter_url:"Введите ссылку.", msg_adding:"Добавляем и загружаем — это может занять несколько секунд…",
+    th_source:"Источник", th_object:"Объект", th_price:"Цена", th_ppm2:"₽/м²",
+    th_delta:"Δ всего", th_since:"С посл. изм.", empty_table:"Пока нет объектов. Добавьте ссылку CIAN выше.",
+    h_history:"История цен", lbl_range:"Период", opt_all:"Всё", opt_90:"90д", opt_30:"30д",
+    lbl_yaxis:"Ось Y", opt_rub:"₽ (абсолют.)", opt_m2:"₽/м²", opt_pct:"% от старта",
+    hint_select:"Выберите объекты выше для графика.", hint_greyed:"Часть рядов скрыта (нет площади для ₽/м²).",
+    h_detail:"Детали", detail_empty:"Выберите один объект для деталей.",
+    d_current:"Текущая цена", d_minmax:"Мин / Макс", d_changes:"Изменений цены",
+    d_tracked:"Дней отслеживания", d_delta:"Δ от первой", d_status:"Статус", d_open:"Открыть объявление →",
+    status_active:"активно", status_delisted:"снято",
+    lbl_studio:"студия", lbl_rooms:n=>n+"-комн.", lbl_floor:(f,ft)=>"эт. "+f+(ft?"/"+ft:""), unit_m2:"м²",
+    confirm_stop_search:n=>`Остановить поиск «${n||''}» и все его объекты? История цен сохранится.`,
+    confirm_stop_object:"Прекратить отслеживание объекта? История цен сохранится.",
+    err_remove:"Не удалось удалить.", add_ok_fetched:n=>`Добавлено, загружено объектов: ${n}.`,
+    add_ok_none:"Добавлено, но пока не удалось загрузить (блокировка или пусто). Подтянется при следующем запуске.",
+    add_unavailable:s=>`Добавлено. Загрузка для ${s} пока недоступна.`,
+    err_unknown_host:"Неизвестный хост — нужна ссылка cian.ru или avito.ru.",
+    err_generic:m=>"Ошибка: "+m, load_error:m=>"Ошибка загрузки: "+m,
+    date_locale:"ru-RU", theme_to_dark:"🌙", theme_to_light:"☀️",
+  },
+  en: {
+    subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
+    card_delisted:"Delisted", card_changes7d:"Price changes (7d)",
+    h_tracking:"Tracking", ph_url:"Paste a CIAN listing or search URL…",
+    ph_note:"Note (optional)", btn_add:"Add", btn_fetching:"Fetching…",
+    msg_enter_url:"Enter a URL.", msg_adding:"Adding and fetching once — this can take a few seconds…",
+    th_source:"Source", th_object:"Object", th_price:"Price", th_ppm2:"₽/m²",
+    th_delta:"Δ total", th_since:"Since change", empty_table:"No objects tracked yet. Add a CIAN URL above to begin.",
+    h_history:"Price history", lbl_range:"Range", opt_all:"All", opt_90:"90d", opt_30:"30d",
+    lbl_yaxis:"Y-axis", opt_rub:"₽ (absolute)", opt_m2:"₽/m²", opt_pct:"% from start",
+    hint_select:"Select objects above to plot.", hint_greyed:"Some series hidden (no area for ₽/m²).",
+    h_detail:"Detail", detail_empty:"Select one object to see details.",
+    d_current:"Current price", d_minmax:"Min / Max", d_changes:"Price changes",
+    d_tracked:"Days tracked", d_delta:"Δ from first", d_status:"Status", d_open:"Open original listing →",
+    status_active:"active", status_delisted:"delisted",
+    lbl_studio:"studio", lbl_rooms:n=>n+"-room", lbl_floor:(f,ft)=>"fl. "+f+(ft?"/"+ft:""), unit_m2:"m²",
+    confirm_stop_search:n=>`Stop the search «${n||''}» and all objects it discovers? Price history is kept.`,
+    confirm_stop_object:"Stop tracking this object? Price history is kept.",
+    err_remove:"Could not remove.", add_ok_fetched:n=>`Added and fetched ${n} listing(s).`,
+    add_ok_none:"Added, but couldn't fetch yet (blocked or empty). It will fill in on the next run.",
+    add_unavailable:s=>`Added. ${s} fetching is not available yet.`,
+    err_unknown_host:"Unrecognized host — expected a cian.ru or avito.ru URL.",
+    err_generic:m=>"Error: "+m, load_error:m=>"Load error: "+m,
+    date_locale:"en-GB", theme_to_dark:"🌙", theme_to_light:"☀️",
+  },
+};
+let LANG = localStorage.getItem("lang") || "ru";
+const t = k => I18N[LANG][k] ?? I18N.en[k] ?? k;
+
+const rub = n => (n==null ? "—" : new Intl.NumberFormat("ru-RU").format(Math.round(n)) + " ₽");
+const pct = n => (n==null ? "—" : (n>0?"+":"") + n.toFixed(1) + "%");
+const PALETTE = ["#3b6ef5","#1f9e5f","#d64545","#e0a020","#9b51e0","#0aa3b5","#e0713b","#5a6485"];
+let LISTINGS = [], SUMMARY = {total:0,active:0,delisted:0,changes_7d:0}, SELECTED = new Set(), HIST = {}, chart = null;
+
+async function jget(u){ const r=await fetch(u); if(!r.ok) throw new Error((await r.json()).detail||r.statusText); return r.json(); }
+
+// --------------------------------------------------------------------------- //
+// theme
+// --------------------------------------------------------------------------- //
+function applyTheme(){
+  const dark = localStorage.getItem("theme")==="dark";
+  document.documentElement.setAttribute("data-theme", dark?"dark":"light");
+  document.getElementById("themeBtn").textContent = dark ? t("theme_to_light") : t("theme_to_dark");
+}
+function toggleTheme(){
+  localStorage.setItem("theme", localStorage.getItem("theme")==="dark" ? "light" : "dark");
+  applyTheme(); refreshChart();
+}
+function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+// --------------------------------------------------------------------------- //
+// static text (re-applied on language change)
+// --------------------------------------------------------------------------- //
+function applyStaticText(){
+  document.documentElement.lang = LANG;
+  document.getElementById("subtitle").textContent = t("subtitle");
+  document.getElementById("h_tracking").textContent = t("h_tracking");
+  document.getElementById("h_history").textContent = t("h_history");
+  document.querySelector("input[name=url]").placeholder = t("ph_url");
+  document.querySelector("input[name=note]").placeholder = t("ph_note");
+  const btn = document.getElementById("addBtn"); if(!btn.disabled) btn.textContent = t("btn_add");
+  document.getElementById("lbl_range").textContent = t("lbl_range");
+  document.getElementById("lbl_yaxis").textContent = t("lbl_yaxis");
+  const rsel = document.getElementById("range").options;
+  rsel[0].text=t("opt_all"); rsel[1].text=t("opt_90"); rsel[2].text=t("opt_30");
+  const ysel = document.getElementById("ymode").options;
+  ysel[0].text=t("opt_rub"); ysel[1].text=t("opt_m2"); ysel[2].text=t("opt_pct");
+  document.getElementById("lang").value = LANG;
+  applyTheme();
+}
+
+async function loadAll(){
+  const [summary, listings] = await Promise.all([jget("/api/summary"), jget("/api/listings")]);
+  SUMMARY = summary; LISTINGS = listings;
+  SELECTED = new Set([...SELECTED].filter(id => LISTINGS.some(l=>l.id===id)));
+  renderAll();
+}
+function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); }
+
+function renderCards(){
+  document.getElementById("cards").innerHTML = [
+    [t("card_total"), SUMMARY.total], [t("card_active"), SUMMARY.active],
+    [t("card_delisted"), SUMMARY.delisted], [t("card_changes7d"), SUMMARY.changes_7d],
+  ].map(([l,n])=>`<div class="card"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+}
+
+function label(l){
+  const p=[]; if(l.rooms!=null) p.push(l.rooms===0? t("lbl_studio") : t("lbl_rooms")(l.rooms));
+  if(l.area_total!=null) p.push(l.area_total+" "+t("unit_m2"));
+  if(l.floor!=null) p.push(t("lbl_floor")(l.floor, l.floors_total));
+  if(l.note) p.push("«"+l.note+"»");
+  return p.join(" · ") || l.external_id;
+}
+
+function renderTable(){
+  if(!LISTINGS.length){ document.getElementById("tableWrap").innerHTML = `<div class="empty">${t("empty_table")}</div>`; return; }
+  const rows = LISTINGS.map(l=>{
+    const d=l.delta_total_pct, dCls = d==null?"":(d<0?"down":(d>0?"up":""));
+    return `<tr class="${l.status==='delisted'?'delisted':''}">
+      <td><span class="badge">${l.source}</span></td>
+      <td><a href="${l.url}" target="_blank" rel="noopener">${label(l)}</a></td>
+      <td class="num">${rub(l.current_price)}</td>
+      <td class="num">${l.price_per_m2==null?'—':rub(l.price_per_m2)+"/"+t("unit_m2")}</td>
+      <td class="num ${dCls}">${pct(d)}</td>
+      <td class="num">${l.days_since_change==null?'—':l.days_since_change+"d"}</td>
+      <td class="num">${l.tracked_source_id!=null
+        ? `<button class="x" title="×" data-src="${l.tracked_source_id}" data-kind="${l.tracked_source_kind}" data-note="${(l.note||'').replace(/"/g,'&quot;')}">×</button>` : ''}</td>
+    </tr>`;}).join("");
+  document.getElementById("tableWrap").innerHTML =
+    `<table><thead><tr><th>${t("th_source")}</th><th>${t("th_object")}</th><th class="num">${t("th_price")}</th>
+     <th class="num">${t("th_ppm2")}</th><th class="num">${t("th_delta")}</th><th class="num">${t("th_since")}</th><th></th></tr></thead>
+     <tbody>${rows}</tbody></table>`;
+  document.querySelectorAll(".x").forEach(b=>b.onclick=()=>removeTracked(b.dataset, b));
+}
+
+function renderChips(){
+  document.getElementById("chips").innerHTML = LISTINGS.map((l,i)=>{
+    const on=SELECTED.has(l.id);
+    return `<span class="chip ${on?'on':''}" data-id="${l.id}">
+      <span class="dot" style="background:${on?PALETTE[i%PALETTE.length]:'var(--dot-off)'}"></span>${label(l)}</span>`;
+  }).join("");
+  document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{
+    const id=+c.dataset.id; SELECTED.has(id)?SELECTED.delete(id):SELECTED.add(id);
+    renderChips(); refreshChart();
+  });
+}
+function colorFor(id){ const i=LISTINGS.findIndex(l=>l.id===id); return PALETTE[(i<0?0:i)%PALETTE.length]; }
+
+function transform(obs, area, mode){
+  if(!obs.length) return [];
+  if(mode==="m2"){ if(!area) return null; return obs.map(o=>({x:Date.parse(o.observed_at), y:o.price/area})); }
+  if(mode==="pct"){ const base=obs[0].price; return obs.map(o=>({x:Date.parse(o.observed_at), y:(o.price/base-1)*100})); }
+  return obs.map(o=>({x:Date.parse(o.observed_at), y:o.price}));
+}
+
+async function refreshChart(){
+  const range=document.getElementById("range").value, mode=document.getElementById("ymode").value;
+  const ids=[...SELECTED];
+  await Promise.all(ids.map(async id=>{ HIST[id+"|"+range]=HIST[id+"|"+range]||await jget(`/api/listings/${id}/history?range=${range}`); }));
+  const datasets=[]; let greyed=false;
+  for(const id of ids){
+    const h=HIST[id+"|"+range], l=LISTINGS.find(x=>x.id===id); if(!h||!l) continue;
+    let data=transform(h.observations, h.area_total, mode);
+    if(data===null){ greyed=true; continue; }
+    if(data.length){ const last=data[data.length-1]; data=[...data,{x:Date.now(), y:last.y}]; }
+    datasets.push({ label:label(l), data, borderColor:colorFor(id), backgroundColor:colorFor(id),
+      stepped:"after", pointRadius:data.map((_,i)=> i<data.length-1?3:0), tension:0, borderWidth:2 });
+  }
+  document.getElementById("chartHint").textContent = ids.length ? (greyed? t("hint_greyed"):"") : t("hint_select");
+  drawChart(datasets, mode);
+  renderDetail(ids.length?ids[0]:null);
+}
+
+function drawChart(datasets, mode){
+  const ctx=document.getElementById("chart");
+  if(chart) chart.destroy();
+  const muted=cssVar("--muted")||"#5a6485", fg=cssVar("--fg")||"#1a1f36", grid=cssVar("--grid")||"#eceff6";
+  const loc=t("date_locale");
+  const yfmt = mode==="pct" ? (v=>v.toFixed(0)+"%") : (v=>new Intl.NumberFormat("ru-RU").format(Math.round(v)));
+  chart=new Chart(ctx,{ type:"line", data:{datasets},
+    options:{ responsive:true, animation:false, parsing:false,
+      scales:{ x:{ type:"linear", ticks:{ color:muted, callback:v=>new Date(v).toLocaleDateString(loc,{day:"2-digit",month:"short"}) }, grid:{color:grid} },
+               y:{ ticks:{ color:muted, callback:yfmt }, grid:{color:grid} } },
+      plugins:{ legend:{ labels:{ color:fg } },
+        tooltip:{ callbacks:{ title:i=>new Date(i[0].parsed.x).toLocaleDateString(loc),
+          label:c=> c.dataset.label+": "+(mode==="pct"?c.parsed.y.toFixed(1)+"%":new Intl.NumberFormat("ru-RU").format(Math.round(c.parsed.y))+(mode==="m2"?" ₽/"+t("unit_m2"):" ₽")) } } } } });
+}
+
+function renderDetail(id){
+  const box=document.getElementById("detail");
+  if(id==null){ box.innerHTML=`<h2>${t("h_detail")}</h2><div class="empty">${t("detail_empty")}</div>`; return; }
+  const l=LISTINGS.find(x=>x.id===id); if(!l) return;
+  const tracked = l.first_seen_at ? Math.max(0, Math.round((Date.now()-Date.parse(l.first_seen_at))/86400000)) : "—";
+  const status = l.status==="delisted" ? t("status_delisted") : t("status_active");
+  box.innerHTML=`<h2>${t("h_detail")} — ${label(l)}</h2>
+    <dl><dt>${t("d_current")}</dt><dd>${rub(l.current_price)}</dd>
+    <dt>${t("d_minmax")}</dt><dd>${rub(l.min_price)} / ${rub(l.max_price)}</dd>
+    <dt>${t("d_changes")}</dt><dd>${l.change_count}</dd>
+    <dt>${t("d_tracked")}</dt><dd>${tracked}</dd>
+    <dt>${t("d_delta")}</dt><dd>${pct(l.delta_total_pct)}</dd>
+    <dt>${t("d_status")}</dt><dd>${status}</dd></dl>
+    <p><a href="${l.url}" target="_blank" rel="noopener">${t("d_open")}</a></p>`;
+}
+
+async function addTracked(){
+  const url=document.querySelector("input[name=url]").value.trim();
+  const note=document.querySelector("input[name=note]").value.trim();
+  const btn=document.getElementById("addBtn"), msg=document.getElementById("addMsg");
+  if(!url){ msg.textContent=t("msg_enter_url"); return; }
+  btn.disabled=true; btn.textContent=t("btn_fetching"); msg.textContent=t("msg_adding");
+  try{
+    const r=await fetch("/api/tracked",{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({url,note})});
+    const body=await r.json();
+    if(!r.ok){ msg.textContent = r.status===400 ? t("err_unknown_host") : t("err_generic")(body.detail||""); return; }
+    msg.textContent = body.fetched>0 ? t("add_ok_fetched")(body.fetched)
+      : (body.source==="avito" ? t("add_unavailable")(body.source) : t("add_ok_none"));
+    document.querySelector("input[name=url]").value=""; document.querySelector("input[name=note]").value="";
+    await loadAll();
+  }catch(e){ msg.textContent=t("err_generic")(e.message); }
+  finally{ btn.disabled=false; btn.textContent=t("btn_add"); }
+}
+
+async function removeTracked(d, btn){
+  const msg = d.kind==="search" ? t("confirm_stop_search")(d.note) : t("confirm_stop_object");
+  if(!confirm(msg)) return;
+  btn.disabled=true;
+  try{ const r=await fetch("/api/tracked/"+d.src,{method:"DELETE"}); if(!r.ok && r.status!==404) throw new Error(); await loadAll(); }
+  catch(e){ alert(t("err_remove")); btn.disabled=false; }
+}
+
+document.getElementById("addBtn").onclick=addTracked;
+document.querySelector("input[name=url]").addEventListener("keydown",e=>{ if(e.key==="Enter") addTracked(); });
+document.getElementById("range").onchange=refreshChart;
+document.getElementById("ymode").onchange=refreshChart;
+document.getElementById("themeBtn").onclick=toggleTheme;
+document.getElementById("lang").onchange=e=>{ LANG=e.target.value; localStorage.setItem("lang",LANG); applyStaticText(); renderAll(); };
+
+applyStaticText();
+loadAll().catch(e=>document.getElementById("addMsg").textContent=t("load_error")(e.message));
+</script>
+</body>
+</html>

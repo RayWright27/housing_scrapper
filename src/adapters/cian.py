@@ -188,6 +188,16 @@ def external_id_from_url(url: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+def classify_url(url: str | None) -> str:
+    """Guess whether a CIAN URL is a single ``'listing'`` or a ``'search'``.
+
+    A URL that carries a numeric offer id is a listing; anything else (a catalog
+    / saved-search page) is treated as a search. Site-specific, so it lives in
+    the adapter (§15).
+    """
+    return "listing" if external_id_from_url(url) else "search"
+
+
 def _extract_external_id(offer: dict[str, Any], url: str | None) -> str | None:
     pid = offer.get("cianId") or offer.get("id")
     payload_id = str(pid) if pid is not None else None

@@ -175,6 +175,53 @@ def _handle_misses(
                         src_row["source"], listing_id, misses)
 
 
+def process_source(
+    adapters: Mapping[str, SiteAdapter],
+    conn,
+    settings,
+    src_row,
+    *,
+    now: str,
+) -> list[Event]:
+    """Run the full pipeline for ONE tracked source and return its events.
+
+    This is the single-source seam shared by :func:`run_once` (the scheduled
+    pass) and the dashboard's add-and-fetch-once flow — the pipeline lives here
+    exactly once. Per-source isolation: a soft failure or exception is logged
+    and yields no events; it never propagates.
+    """
+    events: list[Event] = []
+    source = src_row["source"]
+    adapter = adapters.get(source)
+    if adapter is None:
+        logger.warning("no adapter wired for source %r (tracked_source %s); "
+                       "skipping", source, src_row["id"])
+        return events
+
+    try:
+        raws = _fetch(adapter, src_row["kind"], src_row["url"])
+    except Exception:  # noqa: BLE001 - deliberately broad at the seam
+        logger.exception("fetch failed for tracked_source %s (%s); "
+                         "treating as a miss for this run", src_row["id"], source)
+        raws = []
+
+    seen_listing_ids: set[int] = set()
+    for raw in raws:
+        listing_id = _process_listing(conn, src_row, raw, now, events)
+        if listing_id is not None:
+            seen_listing_ids.add(listing_id)
+
+    # Delisting applies to pinned 'listing' sources only. A 'search' source's
+    # page-1 membership legitimately rotates run-to-run (the site re-ranks), so a
+    # listing dropping out is NOT evidence of removal — treating it as a miss
+    # produced false delistings. Search is discovery-only; to get removal
+    # detection for a specific object, pin it as a 'listing' source.
+    if src_row["kind"] != "search":
+        _handle_misses(conn, src_row, seen_listing_ids,
+                       settings.delist_after_misses, now, events)
+    return events
+
+
 def run_once(
     adapters: Mapping[str, SiteAdapter],
     conn,
@@ -189,37 +236,8 @@ def run_once(
     """
     now = now_fn()
     events: list[Event] = []
-    delist_after = settings.delist_after_misses
-
     for src_row in repo.get_tracked(conn, active_only=True):
-        source = src_row["source"]
-        adapter = adapters.get(source)
-        if adapter is None:
-            logger.warning("no adapter wired for source %r (tracked_source %s); "
-                           "skipping", source, src_row["id"])
-            continue
-
-        # Per-source isolation (§8 / #2): a soft failure or exception in one
-        # source is logged and never aborts the run.
-        try:
-            raws = _fetch(adapter, src_row["kind"], src_row["url"])
-        except Exception:  # noqa: BLE001 - deliberately broad at the seam
-            logger.exception("fetch failed for tracked_source %s (%s); "
-                             "treating as a miss for this run", src_row["id"], source)
-            raws = []
-
-        seen_listing_ids: set[int] = set()
-        for raw in raws:
-            listing_id = _process_listing(conn, src_row, raw, now, events)
-            if listing_id is not None:
-                seen_listing_ids.add(listing_id)
-
-        # Delisting applies to pinned 'listing' sources only. A 'search' source's
-        # page-1 membership legitimately rotates run-to-run (the site re-ranks),
-        # so a listing dropping out is NOT evidence of removal — treating it as a
-        # miss produced false delistings. Search is discovery-only; to get
-        # removal detection for a specific object, pin it as a 'listing' source.
-        if src_row["kind"] != "search":
-            _handle_misses(conn, src_row, seen_listing_ids, delist_after, now, events)
+        events.extend(process_source(adapters, conn, settings, src_row, now=now))
+    return events
 
     return events
