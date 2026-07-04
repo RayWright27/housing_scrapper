@@ -13,7 +13,10 @@ Key behaviors:
 - §8.4 first sighting -> record the first price, emit NOW_TRACKING (not CHANGED).
 - §8.7 a listing missing for N consecutive runs -> DELISTED once. A single soft
   failure (block/captcha) is NOT a delisting; the N-consecutive threshold is
-  what distinguishes a transient block from a genuine removal.
+  what distinguishes a transient block from a genuine removal. Delisting is
+  applied to pinned 'listing' sources only: a 'search' source's page-1 results
+  rotate as the site re-ranks, so a listing dropping out is not evidence of
+  removal (search is discovery-only).
 - Per-source isolation: one source failing (soft failure or exception) is logged
   and never aborts the run.
 """
@@ -211,6 +214,12 @@ def run_once(
             if listing_id is not None:
                 seen_listing_ids.add(listing_id)
 
-        _handle_misses(conn, src_row, seen_listing_ids, delist_after, now, events)
+        # Delisting applies to pinned 'listing' sources only. A 'search' source's
+        # page-1 membership legitimately rotates run-to-run (the site re-ranks),
+        # so a listing dropping out is NOT evidence of removal — treating it as a
+        # miss produced false delistings. Search is discovery-only; to get
+        # removal detection for a specific object, pin it as a 'listing' source.
+        if src_row["kind"] != "search":
+            _handle_misses(conn, src_row, seen_listing_ids, delist_after, now, events)
 
     return events

@@ -221,7 +221,9 @@ def test_search_source_tracks_each_listing(conn) -> None:
         assert price_rows(conn, lid(conn, ext)) == 1
 
 
-def test_search_dropout_delists_missing_listing(conn) -> None:
+def test_search_dropout_does_not_delist(conn) -> None:
+    # Policy A: a 'search' source's page-1 membership rotates as the site
+    # re-ranks, so a listing dropping out is NOT a delisting (discovery-only).
     url = "https://cian.ru/cat.php?deal_type=sale"
     repo.add_tracked_source(conn, "cian", url, "search")
     fake = FakeAdapter()
@@ -229,11 +231,27 @@ def test_search_dropout_delists_missing_listing(conn) -> None:
     fake.search[url] = [raw("1", 100), raw("2", 200), raw("3", 300)]
     run_once({"cian": fake}, conn, settings(1), now_fn=clock)
 
-    fake.search[url] = [raw("1", 100), raw("2", 200)]  # #3 dropped out
+    fake.search[url] = [raw("1", 100), raw("2", 200)]  # #3 rotated off page 1
+    # even with delist_after=1, and repeatedly missing, #3 is never delisted
     events = run_once({"cian": fake}, conn, settings(1), now_fn=clock)
+    events += run_once({"cian": fake}, conn, settings(1), now_fn=clock)
 
-    delisted = [e for e in events if e.type == EventType.DELISTED]
-    assert len(delisted) == 1
-    assert delisted[0].external_id == "3"
-    assert repo.get_listing(conn, lid(conn, "3"))["is_active"] == 0
-    assert repo.get_listing(conn, lid(conn, "1"))["is_active"] == 1
+    assert [e for e in events if e.type == EventType.DELISTED] == []
+    assert repo.get_listing(conn, lid(conn, "3"))["is_active"] == 1  # stays active
+
+
+def test_listing_source_still_delists_after_n_misses(conn) -> None:
+    # Delisting remains in force for a pinned 'listing' source.
+    url = "https://cian.ru/sale/flat/9/"
+    repo.add_tracked_source(conn, "cian", url, "listing")
+    fake = FakeAdapter()
+    clock = Clock()
+    fake.listing[url] = raw("9", 100, url)
+    run_once({"cian": fake}, conn, settings(2), now_fn=clock)  # first-seen
+
+    fake.listing[url] = None
+    evs = run_once({"cian": fake}, conn, settings(2), now_fn=clock)   # miss 1
+    evs += run_once({"cian": fake}, conn, settings(2), now_fn=clock)  # miss 2 -> delist
+    delisted = [e for e in evs if e.type == EventType.DELISTED]
+    assert len(delisted) == 1 and delisted[0].external_id == "9"
+    assert repo.get_listing(conn, lid(conn, "9"))["is_active"] == 0
