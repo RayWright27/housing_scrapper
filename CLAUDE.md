@@ -386,9 +386,9 @@ in the same commit.
 3. CIAN adapter (against your own real URLs)
 4. wire tracker.py end-to-end on CIAN
 5. Telegram notifications
-6. scheduler
-7. web dashboard — API over `repository`, then the static page (table, then
+6. web dashboard — API over `repository`, then the static page (table, then
    chart). Build it on CIAN data while it is the only working source.
+7. scheduler
 8. Avito adapter (last — expect the most iteration here)
 
 When in doubt about scope or a tradeoff, prefer the smallest change that keeps
