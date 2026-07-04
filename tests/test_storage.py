@@ -58,6 +58,35 @@ def test_add_and_get_tracked(conn: sqlite3.Connection) -> None:
     assert inactive  # id returned
 
 
+def test_delete_tracked_source_removes_row_and_links_but_keeps_history(
+    conn: sqlite3.Connection,
+) -> None:
+    src = repo.add_tracked_source(conn, "cian", "https://cian.ru/1", "listing")
+    lid = repo.upsert_listing(conn, source="cian", external_id="1", url="u", now=NOW)
+    repo.link_source_listing(conn, src, lid)
+    repo.record_price(conn, lid, 5_000_000, NOW)
+    assert repo.count_active_links(conn, src) == 1
+
+    repo.delete_tracked_source(conn, src)
+
+    assert repo.get_tracked(conn, active_only=False) == []       # watchlist row gone
+    assert repo.count_active_links(conn, src) == 0               # links gone
+    assert repo.get_listing(conn, lid) is not None               # listing kept
+    assert repo.last_price(conn, lid) == 5_000_000               # history kept
+
+
+def test_count_active_links_ignores_delisted_links(conn: sqlite3.Connection) -> None:
+    src = repo.add_tracked_source(conn, "cian", "https://cian.ru/s", "search")
+    a = repo.upsert_listing(conn, source="cian", external_id="a", url="u", now=NOW)
+    b = repo.upsert_listing(conn, source="cian", external_id="b", url="u", now=NOW)
+    repo.link_source_listing(conn, src, a)
+    repo.link_source_listing(conn, src, b)
+    assert repo.count_active_links(conn, src) == 2
+
+    repo.delist_link(conn, src, b)  # b unlinked from this source
+    assert repo.count_active_links(conn, src) == 1
+
+
 def test_upsert_is_idempotent_on_identity(conn: sqlite3.Connection) -> None:
     first = repo.upsert_listing(
         conn,

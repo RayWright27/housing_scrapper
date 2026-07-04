@@ -136,6 +136,54 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# list: show the watchlist (tracked_sources) with status + linked-listing count
+# --------------------------------------------------------------------------- #
+def cmd_list(args: argparse.Namespace) -> int:
+    from src.storage import repository as repo
+
+    conn = _open_db()
+    rows = repo.get_tracked(conn, active_only=False)
+    if not rows:
+        print("no tracked sources. add one with: python -m src.main add --source cian --url ...")
+    else:
+        print(f"{len(rows)} tracked source(s):\n")
+        for r in rows:
+            status = "active" if r["active"] else "OFF   "
+            n = repo.count_active_links(conn, r["id"])
+            note = f"  «{r['note']}»" if r["note"] else ""
+            print(f"  #{r['id']:<3} {status}  {r['source']:5} {r['kind']:7} "
+                  f"{n:>3} listing(s){note}")
+            print(f"        {r['url']}")
+    conn.close()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# remove: deactivate (default) or --purge delete a tracked source. History kept.
+# --------------------------------------------------------------------------- #
+def cmd_remove(args: argparse.Namespace) -> int:
+    from src.storage import repository as repo
+
+    conn = _open_db()
+    rows = {r["id"]: r for r in repo.get_tracked(conn, active_only=False)}
+    row = rows.get(args.id)
+    if row is None:
+        conn.close()
+        print(f"no tracked source with id {args.id}. Run 'list' to see ids.")
+        return 1
+    if args.purge:
+        repo.delete_tracked_source(conn, args.id)
+        print(f"purged tracked_source #{args.id} ({row['kind']} {row['url']}). "
+              "Listing price history is kept.")
+    else:
+        repo.deactivate_tracked_source(conn, args.id)
+        print(f"deactivated tracked_source #{args.id} ({row['kind']} {row['url']}). "
+              "It will be skipped on the next run; use --purge to delete the row.")
+    conn.close()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # run-once: one full tracking pass. The ONLY place the live adapter is built.
 # --------------------------------------------------------------------------- #
 def cmd_run_once(args: argparse.Namespace) -> int:
@@ -242,6 +290,15 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--kind", default="listing", choices=("listing", "search"))
     a.add_argument("--note", default=None)
     a.set_defaults(func=cmd_add)
+
+    ls = sub.add_parser("list", help="list tracked sources (the watchlist)")
+    ls.set_defaults(func=cmd_list)
+
+    rm = sub.add_parser("remove", help="deactivate (or --purge delete) a tracked source")
+    rm.add_argument("--id", type=int, required=True)
+    rm.add_argument("--purge", action="store_true",
+                    help="hard-delete the watchlist row (price history is kept)")
+    rm.set_defaults(func=cmd_remove)
 
     r = sub.add_parser("run-once", help="run one tracking pass and print events")
     r.set_defaults(func=cmd_run_once)

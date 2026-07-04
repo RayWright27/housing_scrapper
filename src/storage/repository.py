@@ -252,3 +252,26 @@ def last_price(conn: sqlite3.Connection, listing_id: int) -> int | None:
         (listing_id,),
     ).fetchone()
     return int(row["price"]) if row is not None else None
+
+
+def count_active_links(conn: sqlite3.Connection, tracked_source_id: int) -> int:
+    """How many listings this tracked source is currently linked to (is_linked=1)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM source_listings "
+        "WHERE tracked_source_id = ? AND is_linked = 1",
+        (tracked_source_id,),
+    ).fetchone()
+    return int(row["c"])
+
+
+def delete_tracked_source(conn: sqlite3.Connection, tracked_id: int) -> None:
+    """Hard-delete a tracked source and its source-listing links.
+
+    Listings and their price history are shared, durable data and are kept —
+    only the watchlist entry and its bookkeeping links are removed.
+    """
+    conn.execute(
+        "DELETE FROM source_listings WHERE tracked_source_id = ?", (tracked_id,)
+    )
+    conn.execute("DELETE FROM tracked_sources WHERE id = ?", (tracked_id,))
+    conn.commit()
