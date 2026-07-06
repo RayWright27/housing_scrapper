@@ -411,40 +411,14 @@ class CianAdapter:
     def _ensure_context(self) -> None:
         if self._context is not None:
             return
-        from playwright.sync_api import sync_playwright
+        from src.adapters.browser import launch_context
 
-        self._pw = sync_playwright().start()
-        launch_kwargs: dict[str, Any] = {"headless": True}
-        if self.settings.proxy_url:
-            launch_kwargs["proxy"] = {"server": self.settings.proxy_url}
-        self._browser = self._pw.chromium.launch(**launch_kwargs)
-        self._context = self._browser.new_context(
-            locale="ru-RU",
-            user_agent=USER_AGENT,
-            viewport={"width": 1366, "height": 900},
-        )
-        if self.settings.block_media:
-            self._context.route("**/*", self._maybe_block)
-
-    @staticmethod
-    def _maybe_block(route: Any) -> None:
-        if route.request.resource_type in {"image", "media", "font"}:
-            route.abort()
-        else:
-            route.continue_()
+        self._pw, self._browser, self._context = launch_context(self.settings, USER_AGENT)
 
     def close(self) -> None:
-        for obj, stop in ((self._context, "close"), (self._browser, "close")):
-            try:
-                if obj is not None:
-                    getattr(obj, stop)()
-            except Exception:  # best-effort teardown
-                logger.debug("error closing browser object", exc_info=True)
-        if self._pw is not None:
-            try:
-                self._pw.stop()
-            except Exception:
-                logger.debug("error stopping playwright", exc_info=True)
+        from src.adapters.browser import close_context
+
+        close_context(self._pw, self._browser, self._context)
         self._context = self._browser = self._pw = None
 
     def __enter__(self) -> "CianAdapter":

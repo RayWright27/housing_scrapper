@@ -62,6 +62,12 @@ class Settings:
     # Notifications: also push a Telegram message on a newly-tracked listing
     # (NOW_TRACKING), not only on price changes/delistings.
     notify_on_new: bool
+    # Browser hygiene (§7): drive a real, less-detectable browser for hostile
+    # anti-bot (e.g. Avito). headless=False + channel='chrome' + a persistent
+    # user-data dir (cookies) present as an ordinary browser; not evasion.
+    browser_headless: bool
+    browser_channel: str | None      # e.g. 'chrome' to use installed Chrome
+    browser_user_data_dir: str | None  # persistent profile dir (cookies survive)
 
     @property
     def telegram_enabled(self) -> bool:
@@ -98,6 +104,9 @@ def load_settings() -> Settings:
         max_search_pages=_get_int("MAX_SEARCH_PAGES", 1),
         delist_after_misses=_get_int("DELIST_AFTER_MISSES", 3),
         notify_on_new=_get_bool("NOTIFY_ON_NEW", True),
+        browser_headless=_get_bool("BROWSER_HEADLESS", True),
+        browser_channel=_get_optional("BROWSER_CHANNEL"),
+        browser_user_data_dir=_get_optional("BROWSER_USER_DATA_DIR"),
     )
 
 

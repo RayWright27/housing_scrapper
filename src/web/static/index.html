@@ -120,7 +120,7 @@ const I18N = {
     confirm_stop_object:"Прекратить отслеживание объекта? История цен сохранится.",
     err_remove:"Не удалось удалить.", add_ok_fetched:n=>`Добавлено, загружено объектов: ${n}.`,
     add_ok_none:"Добавлено, но пока не удалось загрузить (блокировка или пусто). Подтянется при следующем запуске.",
-    add_unavailable:s=>`Добавлено. Загрузка для ${s} пока недоступна.`,
+    add_avito_hint:"Добавлено в список. Avito отслеживается через grab или ingest (автозагрузка отключена).",
     err_unknown_host:"Неизвестный хост — нужна ссылка cian.ru или avito.ru.",
     err_generic:m=>"Ошибка: "+m, load_error:m=>"Ошибка загрузки: "+m,
     date_locale:"ru-RU", theme_to_dark:"🌙", theme_to_light:"☀️",
@@ -145,7 +145,7 @@ const I18N = {
     confirm_stop_object:"Stop tracking this object? Price history is kept.",
     err_remove:"Could not remove.", add_ok_fetched:n=>`Added and fetched ${n} listing(s).`,
     add_ok_none:"Added, but couldn't fetch yet (blocked or empty). It will fill in on the next run.",
-    add_unavailable:s=>`Added. ${s} fetching is not available yet.`,
+    add_avito_hint:"Added to the watchlist. Avito is tracked via grab or ingest (auto-fetch is off).",
     err_unknown_host:"Unrecognized host — expected a cian.ru or avito.ru URL.",
     err_generic:m=>"Error: "+m, load_error:m=>"Load error: "+m,
     date_locale:"en-GB", theme_to_dark:"🌙", theme_to_light:"☀️",
@@ -319,7 +319,8 @@ async function addTracked(){
     const r=await fetch("/api/tracked",{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({url,note})});
     const body=await r.json();
     if(!r.ok){ msg.textContent = r.status===400 ? t("err_unknown_host") : t("err_generic")(body.detail||""); return; }
-    msg.textContent = body.fetched>0 ? t("add_ok_fetched")(body.fetched) : t("add_ok_none");
+    msg.textContent = body.fetched>0 ? t("add_ok_fetched")(body.fetched)
+      : (body.source==="avito" ? t("add_avito_hint") : t("add_ok_none"));
     document.querySelector("input[name=url]").value=""; document.querySelector("input[name=note]").value="";
     await loadAll();
   }catch(e){ msg.textContent=t("err_generic")(e.message); }

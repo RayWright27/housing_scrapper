@@ -222,6 +222,21 @@ def process_source(
     return events
 
 
+def ingest_raws(conn, src_row, raws, *, now_fn: Callable[[], str] = _utcnow) -> list[Event]:
+    """Apply already-parsed RawListings (e.g. from a hand-saved page) through the
+    normalize -> upsert -> detect -> record pipeline, emitting events.
+
+    No fetching and no delisting: a one-off manual ingest must never mark a
+    source's other listings as missed. This is the seam the `ingest` CLI uses
+    when a site (Avito) hard-blocks automated fetching (§7 fallback).
+    """
+    now = now_fn()
+    events: list[Event] = []
+    for raw in raws:
+        _process_listing(conn, src_row, raw, now, events)
+    return events
+
+
 def run_once(
     adapters: Mapping[str, SiteAdapter],
     conn,

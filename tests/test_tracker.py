@@ -10,7 +10,7 @@ import pytest
 from src.adapters.base import RawListing
 from src.storage import repository as repo
 from src.storage.db import init_db
-from src.tracker import EventType, run_once
+from src.tracker import EventType, ingest_raws, run_once
 
 
 # --------------------------------------------------------------------------- #
@@ -206,6 +206,24 @@ def test_reappearance_reactivates_after_delist(conn) -> None:
 # --------------------------------------------------------------------------- #
 # search source
 # --------------------------------------------------------------------------- #
+def test_ingest_raws_tracks_and_detects_without_delisting(conn) -> None:
+    # ingest (hand-saved page): records first price + NOW_TRACKING, then a change.
+    src = repo.add_tracked_source(conn, "cian", "https://cian.ru/sale/flat/1/", "listing")
+    src_row = next(r for r in repo.get_tracked(conn) if r["id"] == src)
+    clock = Clock()
+
+    e1 = ingest_raws(conn, src_row, [raw("1", 5_000_000)], now_fn=clock)
+    assert [e.type for e in e1] == [EventType.NOW_TRACKING]
+
+    e2 = ingest_raws(conn, src_row, [raw("1", 5_000_000)], now_fn=clock)  # same price
+    assert e2 == []  # §8.6
+
+    e3 = ingest_raws(conn, src_row, [raw("1", 5_500_000)], now_fn=clock)  # changed
+    assert [e.type for e in e3] == [EventType.PRICE_CHANGED]
+    assert e3[0].delta == 500_000
+    assert price_rows(conn, lid(conn, "1")) == 2  # append-only; no delisting side effects
+
+
 def test_search_source_tracks_each_listing(conn) -> None:
     url = "https://cian.ru/cat.php?deal_type=sale"
     repo.add_tracked_source(conn, "cian", url, "search")

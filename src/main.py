@@ -193,7 +193,6 @@ def cmd_remove(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 def cmd_run_once(args: argparse.Namespace) -> int:
     from config import settings
-    from src.adapters.avito import AvitoAdapter
     from src.adapters.cian import CianAdapter
     from src.notify.telegram import ListingMeta, TelegramNotifier
     from src.storage import repository as repo
@@ -201,9 +200,11 @@ def cmd_run_once(args: argparse.Namespace) -> int:
 
     conn = _open_db()
     try:
-        # live adapters constructed here only (one persistent browser each)
-        with CianAdapter() as cian, AvitoAdapter() as avito:
-            adapters = {"cian": cian, "avito": avito}
+        # Only CIAN is auto-fetched. Avito is intentionally excluded: its firewall
+        # blocks automation and repeated attempts flag the IP (§7). Avito is
+        # tracked via `grab` (read your open tabs) or `ingest` (a saved page).
+        with CianAdapter() as cian:
+            adapters = {"cian": cian}
             events = run_once(adapters, conn, settings)
 
         # Deliver notifications AFTER persistence, while the DB is still open so
@@ -226,6 +227,11 @@ def cmd_run_once(args: argparse.Namespace) -> int:
         print("no events (nothing new, no price changes, no delistings)")
         return 0
     print(f"{len(events)} event(s):\n")
+    _print_events(events)
+    return 0
+
+
+def _print_events(events) -> None:
     for ev in events:
         if ev.type.value == "price_changed":
             print(f"  PRICE_CHANGED  {ev.source} {ev.external_id}: "
@@ -236,7 +242,192 @@ def cmd_run_once(args: argparse.Namespace) -> int:
                   f"{ev.price:,}  {ev.url}")
         else:
             print(f"  DELISTED       {ev.source} {ev.external_id}  {ev.url}")
+
+
+def _ensure_tracked_source(conn, source: str, url: str, kind: str, note: str | None):
+    """Return the tracked_source for (source, url), creating it if absent."""
+    from src.storage import repository as repo
+
+    for row in repo.get_tracked(conn, active_only=False):
+        if row["source"] == source and row["url"] == url:
+            return row
+    tracked_id = repo.add_tracked_source(conn, source, url, kind, note)
+    return next(r for r in repo.get_tracked(conn, active_only=False)
+               if r["id"] == tracked_id)
+
+
+def _meta_lookup(conn):
+    """A get_meta(listing_id) closure for the notifier, over an open connection."""
+    from src.notify.telegram import ListingMeta
+    from src.storage import repository as repo
+
+    def get_meta(listing_id: int):
+        row = repo.get_listing(conn, listing_id)
+        if row is None:
+            return None
+        return ListingMeta(rooms=row["rooms"], area_total=row["area_total"],
+                           title=row["title"], address=row["address"])
+
+    return get_meta
+
+
+# --------------------------------------------------------------------------- #
+# warmup: open a headful, persistent-profile browser and WAIT so you can solve
+# a challenge / sign in once. The cookie is saved into the profile dir, so the
+# dashboard and run-once (same profile) reuse it. Best-effort (§7): you solve
+# the challenge by hand — nothing is defeated in code.
+# --------------------------------------------------------------------------- #
+def cmd_warmup(args: argparse.Namespace) -> int:
+    from config import settings
+
+    if not settings.browser_user_data_dir:
+        print("Set BROWSER_USER_DATA_DIR (a dedicated folder) and BROWSER_HEADLESS=0 "
+              "in .env first, then re-run. Also stop `serve` — it locks the profile.")
+        return 1
+    if settings.browser_headless:
+        print("BROWSER_HEADLESS=0 is required so the window is visible. Set it and re-run.")
+        return 1
+
+    from src.adapters.avito import USER_AGENT
+    from src.adapters.browser import close_context, launch_context
+
+    pw, browser, ctx = launch_context(settings, USER_AGENT)
+    page = ctx.new_page()
+    try:
+        page.goto(args.url, wait_until="domcontentloaded", timeout=60_000)
+    except Exception as exc:  # noqa: BLE001 - just report; the window is still usable
+        print(f"(navigation note: {type(exc).__name__}) — the window is open anyway.")
+    print(f"\nA browser window is open at:\n  {args.url}\n")
+    print("Solve any captcha / sign in, open a real listing so it loads normally,")
+    print("then return here and press Enter to save cookies and close.")
+    try:
+        input()
+    except EOFError:
+        pass
+    close_context(pw, browser, ctx)
+    print(f"\nSaved browser state to {settings.browser_user_data_dir}.")
+    print("Now start `serve` (or run `run-once`) — it reuses this profile's cookies.")
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# ingest (fallback): parse a hand-saved HTML page and track it — no fetching.
+# For sites that hard-block automation (Avito, §7), you save the page in your
+# real browser and feed it here; the parse->normalize->track->notify pipeline is
+# reused verbatim.
+# --------------------------------------------------------------------------- #
+def _recover_view_source(html: str) -> str:
+    """Unwrap a browser 'view-source' save back to real HTML, if needed."""
+    if 'class="html-tag"' in html or 'class="line-content"' in html:
+        import html as _html
+        import re as _re
+
+        return _html.unescape(_re.sub(r"<[^>]+>", "", html))
+    return html
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from config import settings
+    from src import tracker
+    from src.notify.telegram import TelegramNotifier
+
+    mod = _parse_module(args.source)
+    html = _recover_view_source(Path(args.file).read_text(encoding="utf-8", errors="replace"))
+    kind = "search" if args.search else "listing"
+    if args.search:
+        raws = mod.parse_search(html)
+    else:
+        one = mod.parse_listing(html, args.url)
+        raws = [one] if one is not None else []
+    if not raws:
+        print("No listings parsed. The saved page may be a block/captcha page, the "
+              "wrong --source, or a 'view-source' of a search — re-save as 'HTML Only'.")
+        return 1
+
+    conn = _open_db()
+    try:
+        src_row = _ensure_tracked_source(conn, args.source, args.url, kind, args.note)
+        events = tracker.ingest_raws(conn, src_row, raws)
+        TelegramNotifier.from_settings(settings).notify(events, _meta_lookup(conn))
+    finally:
+        conn.close()
+
+    print(f"ingested {len(raws)} listing(s) from {args.file}; {len(events)} event(s):")
+    _print_events(events)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# grab: read the CIAN/Avito tabs already open in YOUR browser and track them.
+# You browse the pages yourself (as a human Avito trusts); this attaches to the
+# running Chrome over its debug port and reads content that is ALREADY loaded —
+# no navigation, no request to the site, nothing to detect (§7-clean). Launch
+# Chrome first with:  chrome --remote-debugging-port=9222 --user-data-dir=<dir>
+# --------------------------------------------------------------------------- #
+def cmd_grab(args: argparse.Namespace) -> int:
+    from config import settings
+    from playwright.sync_api import sync_playwright
+
+    from src import tracker
+    from src.notify.telegram import TelegramNotifier
+    from src.web.service import detect_source
+
+    conn = _open_db()
+    all_events = []
+    grabbed = 0
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.connect_over_cdp(args.cdp_url)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Could not connect to Chrome at {args.cdp_url} "
+                      f"({type(exc).__name__}). Launch Chrome first with "
+                      f"--remote-debugging-port=9222 and browse your tabs.")
+                return 1
+            pages = [pg for ctx in browser.contexts for pg in ctx.pages]
+            print(f"connected; scanning {len(pages)} open tab(s)…")
+            for page in pages:
+                try:
+                    url = page.url
+                    source = detect_source(url)
+                    if source not in ("cian", "avito"):
+                        continue
+                    mod = _parse_module(source)
+                    kind = mod.classify_url(url)
+                    html = page.content()  # already-loaded DOM; no site request
+                    raws = (mod.parse_search(html) if kind == "search"
+                            else ([r for r in [mod.parse_listing(html, url)] if r]))
+                    if not raws:
+                        print(f"  · no data parsed: {url[:72]}")
+                        continue
+                    src_row = _ensure_tracked_source(conn, source, url, kind, args.note)
+                    all_events += tracker.ingest_raws(conn, src_row, raws)
+                    grabbed += len(raws)
+                    print(f"  · {len(raws):>2} from {source} {kind}: {url[:64]}")
+                except Exception as exc:  # noqa: BLE001 - one bad tab must not abort
+                    print(f"  · skipped a tab ({type(exc).__name__})")
+            browser.close()  # detaches; does NOT close your Chrome
+        TelegramNotifier.from_settings(settings).notify(all_events, _meta_lookup(conn))
+    finally:
+        conn.close()
+
+    print(f"\ngrabbed {grabbed} listing(s) from open tabs; {len(all_events)} event(s):")
+    _print_events(all_events)
+    return 0
+
+
+def _parse_module(source: str):
+    if source == "cian":
+        from src.adapters import cian
+
+        return cian
+    if source == "avito":
+        from src.adapters import avito
+
+        return avito
+    raise SystemExit(f"unknown source: {source!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +521,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     sv = sub.add_parser("serve", help="start the local web dashboard")
     sv.set_defaults(func=cmd_serve)
+
+    wu = sub.add_parser("warmup", help="open a headful browser to solve a challenge / seed cookies")
+    wu.add_argument("--url", default="https://www.avito.ru/",
+                    help="page to open (solve the captcha here)")
+    wu.set_defaults(func=cmd_warmup)
+
+    ing = sub.add_parser("ingest", help="track a hand-saved HTML page (no fetch; for blocked sites)")
+    ing.add_argument("--source", required=True, choices=sorted(_ADAPTERS))
+    ing.add_argument("--url", required=True, help="the original listing/search URL")
+    ing.add_argument("--file", required=True, help="path to the saved .html page")
+    ing.add_argument("--search", action="store_true", help="the file is a search results page")
+    ing.add_argument("--note", default=None)
+    ing.set_defaults(func=cmd_ingest)
+
+    gr = sub.add_parser("grab", help="track CIAN/Avito tabs already open in your browser (no fetch)")
+    gr.add_argument("--cdp-url", dest="cdp_url", default="http://localhost:9222",
+                    help="Chrome remote-debugging endpoint (default http://localhost:9222)")
+    gr.add_argument("--note", default=None)
+    gr.set_defaults(func=cmd_grab)
 
     return parser
 

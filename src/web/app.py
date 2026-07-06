@@ -95,7 +95,8 @@ def create_app(
                     )
             fetched = sum(1 for e in events if e.type == tracker.EventType.NOW_TRACKING)
         if adapter is None:
-            message = f"Added. {source} fetching is not available yet."
+            message = (f"Added to the watchlist. {source} is tracked via "
+                       "`grab` or `ingest` (auto-fetch is off).")
         elif fetched:
             message = f"Added and fetched {fetched} listing(s)."
         else:
@@ -150,11 +151,9 @@ def build_production_app():
             from src.adapters.cian import CianAdapter
             with CianAdapter() as adapter:  # sync Playwright; endpoint is threadpooled
                 yield adapter
-        elif source == "avito":
-            from src.adapters.avito import AvitoAdapter
-            with AvitoAdapter() as adapter:
-                yield adapter
         else:
+            # Avito is not auto-fetched (firewall/§7); the add is still recorded,
+            # and Avito is tracked via `grab` / `ingest`.
             yield None
 
     return create_app(get_conn=get_conn, build_adapter=build_adapter, settings=settings)
