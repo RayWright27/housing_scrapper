@@ -392,8 +392,11 @@ class AvitoAdapter:
         page = self._context.new_page()
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            # Wait only for the server-rendered state blob, not "networkidle"
+            # (which never settles on Avito and wasted up to 15s per page).
             try:
-                page.wait_for_load_state("networkidle", timeout=15_000)
+                page.wait_for_function(
+                    "() => !!window.__staticRouterHydrationData", timeout=8_000)
             except PWTimeout:
                 pass
             return page.content(), page.url

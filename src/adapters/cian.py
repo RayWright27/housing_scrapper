@@ -441,8 +441,11 @@ class CianAdapter:
         page = self._context.new_page()
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            # The state blob is server-rendered, so wait only for IT to exist —
+            # not for "networkidle", which never settles on CIAN (ads/trackers)
+            # and wasted up to 15s per page.
             try:
-                page.wait_for_load_state("networkidle", timeout=15_000)
+                page.wait_for_function("() => !!window._cianConfig", timeout=8_000)
             except PWTimeout:
                 pass
             return page.content(), page.url
