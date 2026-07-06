@@ -81,8 +81,15 @@ def _label(event: Event, meta: ListingMeta | None) -> str:
     return " · ".join(parts) if parts else _esc(event.external_id)
 
 
+_SOURCE_LABELS = {"cian": "CIAN", "avito": "Avito"}
+
+
+def _src(event: Event) -> str:
+    return _SOURCE_LABELS.get(event.source, (event.source or "").upper())
+
+
 def _link(event: Event) -> str:
-    return f'<a href="{html.escape(event.url, quote=True)}">open on CIAN</a>'
+    return f'<a href="{html.escape(event.url, quote=True)}">{_src(event)} →</a>'
 
 
 def _price_per_m2(price: int, meta: ListingMeta | None) -> str | None:
@@ -97,7 +104,7 @@ def format_price_changed(event: Event, meta: ListingMeta | None) -> str:
     delta = f"{event.delta:+,}".replace(",", NB) + NB + "₽"  # keep explicit sign
     pct = f"{event.percent:+.1f}%"
     return (
-        f"{arrow} Price changed ({pct})\n"
+        f"{arrow} Price changed ({pct}) · {_src(event)}\n"
         f"{_label(event, meta)}\n"
         f"{_rub(event.old_price)} → {_rub(event.new_price)} ({delta})\n"
         f"{_link(event)}"
@@ -107,7 +114,7 @@ def format_price_changed(event: Event, meta: ListingMeta | None) -> str:
 def format_delisted(event: Event, meta: ListingMeta | None) -> str:
     # Neutral: a delisting often means sold, but we don't assert it as fact.
     return (
-        "⚪️ Removed from listing (may be sold or withdrawn)\n"
+        f"⚪️ Removed from listing · {_src(event)} (may be sold or withdrawn)\n"
         f"{_label(event, meta)}\n"
         f"{_link(event)}"
     )
@@ -119,7 +126,7 @@ def format_now_tracking(event: Event, meta: ListingMeta | None) -> str:
     if per_m2 is not None:
         price_line += f" (≈ {per_m2})"
     return (
-        "\U0001f195 Now tracking\n"
+        f"\U0001f195 Now tracking · {_src(event)}\n"
         f"{_label(event, meta)}\n"
         f"{price_line}\n"
         f"{_link(event)}"

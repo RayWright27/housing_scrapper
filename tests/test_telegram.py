@@ -104,9 +104,20 @@ def test_studio_and_missing_meta_label_gracefully() -> None:
 def test_delisted_is_neutral_and_does_not_assert_sold() -> None:
     text = format_delisted(delisted(), META)
     assert "may be sold or withdrawn" in text
-    assert "open on CIAN" in text
     # neutral: never states it as a fact
     assert "sold." not in text.lower()
+
+
+def test_messages_show_the_source() -> None:
+    # CIAN events say CIAN; an Avito event says Avito — so the two are distinct.
+    assert "CIAN" in format_now_tracking(now_tracking(), META)
+    assert "CIAN" in format_price_changed(price_changed(), META)
+    assert "CIAN" in format_delisted(delisted(), META)
+    avito_ev = Event(type=EventType.NOW_TRACKING, source="avito", listing_id=2,
+                     external_id="9", url="https://www.avito.ru/x_9", note="flat",
+                     price=5_000_000)
+    text = format_now_tracking(avito_ev, ListingMeta(rooms=1, area_total=30.0))
+    assert "Avito" in text and "CIAN" not in text
 
 
 def test_special_characters_are_escaped() -> None:
