@@ -418,6 +418,23 @@ def cmd_grab(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# urls: print tracked URLs, one per line (for scripts that open browser tabs)
+# --------------------------------------------------------------------------- #
+def cmd_urls(args: argparse.Namespace) -> int:
+    from src.storage import repository as repo
+
+    conn = _open_db()
+    try:
+        for row in repo.get_tracked(conn, active_only=not args.all):
+            if args.source and row["source"] != args.source:
+                continue
+            print(row["url"])
+    finally:
+        conn.close()
+    return 0
+
+
 def _parse_module(source: str):
     if source == "cian":
         from src.adapters import cian
@@ -540,6 +557,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Chrome remote-debugging endpoint (default http://localhost:9222)")
     gr.add_argument("--note", default=None)
     gr.set_defaults(func=cmd_grab)
+
+    ur = sub.add_parser("urls", help="print tracked URLs, one per line (for scripting)")
+    ur.add_argument("--source", choices=sorted(_ADAPTERS), default=None)
+    ur.add_argument("--all", action="store_true", help="include inactive sources")
+    ur.set_defaults(func=cmd_urls)
 
     return parser
 
