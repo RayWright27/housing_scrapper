@@ -264,6 +264,68 @@ def count_active_links(conn: sqlite3.Connection, tracked_source_id: int) -> int:
     return int(row["c"])
 
 
+# --------------------------------------------------------------------------- #
+# outbox: Telegram messages that failed to send, replayed once delivery works
+# --------------------------------------------------------------------------- #
+def enqueue_notification(
+    conn: sqlite3.Connection,
+    text: str,
+    created_at: str,
+    *,
+    last_error: str | None = None,
+) -> int:
+    """Append a rendered message to the outbox; return its id.
+
+    ``created_at`` is ISO-8601 UTC. ``attempts`` starts at 1 because a message is
+    only ever enqueued *after* a delivery attempt has already failed.
+    """
+    cur = conn.execute(
+        """
+        INSERT INTO pending_notifications (text, created_at, attempts,
+                                           last_attempt_at, last_error)
+        VALUES (?, ?, 1, ?, ?)
+        """,
+        (text, created_at, created_at, last_error),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def pending_notifications(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return queued messages, oldest first (the order they must be resent in)."""
+    return list(
+        conn.execute(
+            "SELECT * FROM pending_notifications ORDER BY created_at, id"
+        ).fetchall()
+    )
+
+
+def delete_notification(conn: sqlite3.Connection, notification_id: int) -> None:
+    """Drop a message from the outbox once it has been delivered."""
+    conn.execute(
+        "DELETE FROM pending_notifications WHERE id = ?", (notification_id,)
+    )
+    conn.commit()
+
+
+def mark_notification_attempt(
+    conn: sqlite3.Connection,
+    notification_id: int,
+    attempted_at: str,
+    error: str | None,
+) -> None:
+    """Record a failed replay attempt (bump counter, note time + error type)."""
+    conn.execute(
+        """
+        UPDATE pending_notifications
+        SET attempts = attempts + 1, last_attempt_at = ?, last_error = ?
+        WHERE id = ?
+        """,
+        (attempted_at, error, notification_id),
+    )
+    conn.commit()
+
+
 def delete_tracked_source(conn: sqlite3.Connection, tracked_id: int) -> None:
     """Hard-delete a tracked source and its source-listing links.
 

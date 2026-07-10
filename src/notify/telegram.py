@@ -12,9 +12,11 @@ Mirrors the phase-3 fetch/parse split:
   tests.
 
 Telegram is optional (§10): with no token/chat id the notifier is a silent
-no-op. Send failures are logged and swallowed — a notification never aborts a
-run or loses data (the price is already persisted by the tracker). Secrets
-(token, chat id) are never logged.
+no-op. A send never aborts a run. When delivery fails (e.g. Telegram is
+unreachable with no VPN) the rendered message is not lost: it is stored in a
+persistent outbox and replayed, oldest first, the next time a send succeeds.
+The outbox is injected (a DB-free port, like ``get_meta``) so this module keeps
+no DB access. Secrets (token, chat id) are never logged.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Protocol
 
 from src.tracker import Event, EventType
 
@@ -37,6 +39,27 @@ PARSE_MODE = "HTML"
 NB = " "
 Transport = Callable[[str], None]
 MetaLookup = Callable[[int], "ListingMeta | None"]
+
+
+@dataclass(frozen=True)
+class PendingMessage:
+    """One rendered, undelivered message replayed from the outbox."""
+
+    id: int
+    text: str
+
+
+class Outbox(Protocol):
+    """A persistent queue of messages that failed to send (CLAUDE.md §2, §9b).
+
+    Injected so this module stays DB-free: the concrete implementation lives at
+    the CLI seam (``main.py``) over the repository, exactly like ``get_meta``.
+    """
+
+    def pending(self) -> list[PendingMessage]: ...
+    def remember(self, text: str) -> None: ...
+    def forget(self, message_id: int) -> None: ...
+    def attempted(self, message_id: int, error: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -178,12 +201,14 @@ class TelegramNotifier:
         *,
         notify_on_new: bool = True,
         transport: Transport | None = None,
+        outbox: Outbox | None = None,
         timeout: float = 10.0,
         max_attempts: int = 2,
         retry_delay: float = 1.0,
     ) -> None:
         self.enabled = bool(token and chat_id)
         self.notify_on_new = notify_on_new
+        self._outbox = outbox
         self._max_attempts = max(1, max_attempts)
         self._retry_delay = retry_delay
         if transport is not None:
@@ -194,40 +219,91 @@ class TelegramNotifier:
             self._transport = None
 
     @classmethod
-    def from_settings(cls, settings, *, transport: Transport | None = None) -> "TelegramNotifier":
+    def from_settings(
+        cls,
+        settings,
+        *,
+        transport: Transport | None = None,
+        outbox: Outbox | None = None,
+    ) -> "TelegramNotifier":
         return cls(
             settings.telegram_bot_token,
             settings.telegram_chat_id,
             notify_on_new=settings.notify_on_new,
             transport=transport,
+            outbox=outbox,
         )
 
     def notify(self, events, get_meta: MetaLookup) -> None:
-        """Format and send each relevant event. Never raises."""
+        """Format and send each relevant event. Never raises.
+
+        A send that fails (e.g. Telegram unreachable — no VPN) is not dropped:
+        the rendered message is queued in the outbox and replayed, oldest first,
+        the next time delivery succeeds. Any existing backlog is flushed before
+        this run's new events so messages keep their chronological order.
+        """
         if not self.enabled:
             logger.info("telegram disabled (no token/chat id) — skipping %d event(s)",
                         len(events))
             return
+        # Replay backlog first. If Telegram is still down this returns False and
+        # we won't hammer it with new sends — new events go straight to the queue.
+        online = self._flush_pending()
         for event in events:
             if event.type == EventType.NOW_TRACKING and not self.notify_on_new:
                 continue
             meta = get_meta(event.listing_id)
             text = format_event(event, meta)
-            if text is not None:
-                self._send(text)
+            if text is None:
+                continue
+            if online:
+                ok, _err = self._deliver(text)
+                if ok:
+                    continue
+                online = False  # connection just dropped mid-batch
+            self._queue(text)
 
-    def _send(self, text: str) -> None:
-        """Send one message with a small bounded retry; log+swallow on failure."""
+    def _flush_pending(self) -> bool:
+        """Replay queued messages oldest-first. Return False if Telegram is
+        unreachable (so the caller stops attempting new sends this pass).
+
+        With no outbox configured there is nothing to replay and we optimistically
+        report online, preserving the original drop-on-failure behaviour."""
+        if self._outbox is None:
+            return True
+        for item in self._outbox.pending():
+            ok, err = self._deliver(item.text)
+            if not ok:
+                self._outbox.attempted(item.id, err or "unknown")
+                return False
+            self._outbox.forget(item.id)
+        return True
+
+    def _queue(self, text: str) -> None:
+        """Persist an undeliverable message for later, or drop it if no outbox."""
+        if self._outbox is not None:
+            self._outbox.remember(text)
+        else:
+            logger.error("telegram send gave up after %d attempts and no outbox "
+                         "is configured; event dropped (price already persisted)",
+                         self._max_attempts)
+
+    def _deliver(self, text: str) -> tuple[bool, str | None]:
+        """Attempt one message with a small bounded retry. Never raises.
+
+        Returns ``(True, None)`` on success, or ``(False, error_type_name)`` after
+        exhausting attempts — the caller decides whether to queue it."""
         assert self._transport is not None  # enabled implies a transport
+        error: str | None = None
         for attempt in range(1, self._max_attempts + 1):
             try:
                 self._transport(text)
-                return
+                return True, None
             except Exception as exc:  # noqa: BLE001 - delivery must never crash a run
                 # Log the failure REASON only — never the endpoint (embeds token).
+                error = type(exc).__name__
                 logger.warning("telegram send failed (attempt %d/%d): %s",
-                               attempt, self._max_attempts, type(exc).__name__)
+                               attempt, self._max_attempts, error)
                 if attempt < self._max_attempts:
                     time.sleep(self._retry_delay)
-        logger.error("telegram send gave up after %d attempts; event dropped "
-                     "(price already persisted)", self._max_attempts)
+        return False, error

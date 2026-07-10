@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.notify.telegram import (
     ListingMeta,
+    PendingMessage,
     TelegramNotifier,
     format_delisted,
     format_now_tracking,
@@ -43,22 +44,47 @@ def delisted() -> Event:
 
 
 class FakeTransport:
-    """Records the texts it is asked to send; can be told to fail."""
+    """Records the texts it is asked to send; can be told to fail.
+
+    ``fail`` may be flipped between ``notify`` calls to simulate connectivity
+    coming back (e.g. the VPN being turned on)."""
 
     def __init__(self, fail: bool = False) -> None:
         self.sent: list[str] = []
         self.fail = fail
 
     def __call__(self, text: str) -> None:
-        self.sent.append(text)
+        self.sent.append(text)  # records the attempt (even a failing one)
         if self.fail:
             raise RuntimeError("simulated telegram failure")
 
 
-def _notifier(transport, *, notify_on_new=True, max_attempts=2):
+class FakeOutbox:
+    """In-memory stand-in for the DB-backed outbox (mirrors its semantics)."""
+
+    def __init__(self) -> None:
+        self._items: list[PendingMessage] = []
+        self._next = 1
+        self.attempts: list[int] = []  # ids marked as failed replays
+
+    def pending(self) -> list[PendingMessage]:
+        return list(self._items)
+
+    def remember(self, text: str) -> None:
+        self._items.append(PendingMessage(id=self._next, text=text))
+        self._next += 1
+
+    def forget(self, message_id: int) -> None:
+        self._items = [m for m in self._items if m.id != message_id]
+
+    def attempted(self, message_id: int, error: str) -> None:
+        self.attempts.append(message_id)
+
+
+def _notifier(transport, *, notify_on_new=True, max_attempts=2, outbox=None):
     return TelegramNotifier("tok", "chat", notify_on_new=notify_on_new,
-                            transport=transport, max_attempts=max_attempts,
-                            retry_delay=0)
+                            transport=transport, outbox=outbox,
+                            max_attempts=max_attempts, retry_delay=0)
 
 
 # --------------------------------------------------------------------------- #
@@ -168,3 +194,49 @@ def test_get_meta_none_still_sends() -> None:
     transport = FakeTransport()
     _notifier(transport).notify([price_changed()], lambda _l: None)
     assert len(transport.sent) == 1  # falls back to note-only label, still delivers
+
+
+# --------------------------------------------------------------------------- #
+# outbox: undeliverable messages are queued and replayed, never lost
+# --------------------------------------------------------------------------- #
+def test_failed_send_is_queued_not_dropped() -> None:
+    transport = FakeTransport(fail=True)  # Telegram unreachable (e.g. no VPN)
+    outbox = FakeOutbox()
+    _notifier(transport, outbox=outbox).notify([price_changed()], lambda _l: META)
+    pending = outbox.pending()
+    assert len(pending) == 1                       # not dropped — it is queued
+    assert "Price changed" in pending[0].text
+
+
+def test_backlog_is_replayed_when_connection_returns() -> None:
+    transport = FakeTransport(fail=True)
+    outbox = FakeOutbox()
+    notifier = _notifier(transport, outbox=outbox)
+    notifier.notify([price_changed()], lambda _l: META)   # offline -> queued
+    assert len(outbox.pending()) == 1
+
+    transport.fail = False                                # VPN comes back
+    notifier.notify([], lambda _l: META)                  # any next pass flushes
+    assert outbox.pending() == []                         # delivered and forgotten
+    assert any("Price changed" in t for t in transport.sent)
+
+
+def test_backlog_is_flushed_before_new_events() -> None:
+    transport = FakeTransport()                    # online
+    outbox = FakeOutbox()
+    outbox.remember("QUEUED-OLD")                  # a pre-existing backlog message
+    _notifier(transport, outbox=outbox).notify([now_tracking()], lambda _l: META)
+    assert outbox.pending() == []                  # backlog cleared
+    assert transport.sent[0] == "QUEUED-OLD"       # replayed FIRST (chronological)
+    assert "Now tracking" in transport.sent[1]     # the new event goes out AFTER
+
+
+def test_offline_retains_backlog_and_queues_new_events() -> None:
+    transport = FakeTransport(fail=True)           # still offline
+    outbox = FakeOutbox()
+    outbox.remember("QUEUED-OLD")
+    _notifier(transport, outbox=outbox).notify([now_tracking()], lambda _l: META)
+    texts = [m.text for m in outbox.pending()]
+    assert "QUEUED-OLD" in texts                   # existing backlog kept
+    assert any("Now tracking" in t for t in texts)  # new event queued too
+    assert outbox.attempts == [1]                  # the backlog replay was tried once

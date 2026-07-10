@@ -219,7 +219,9 @@ def cmd_run_once(args: argparse.Namespace) -> int:
                 title=row["title"], address=row["address"],
             )
 
-        TelegramNotifier.from_settings(settings).notify(events, get_meta)
+        TelegramNotifier.from_settings(
+            settings, outbox=_make_outbox(conn)
+        ).notify(events, get_meta)
     finally:
         conn.close()
 
@@ -269,6 +271,38 @@ def _meta_lookup(conn):
                            title=row["title"], address=row["address"])
 
     return get_meta
+
+
+def _make_outbox(conn):
+    """A DB-backed Outbox for the notifier, over an open connection.
+
+    Persists messages that fail to send and replays them once Telegram is
+    reachable again. Built here at the CLI seam so telegram.py stays DB-free
+    (§9b), exactly like ``_meta_lookup``.
+    """
+    from datetime import datetime, timezone
+
+    from src.notify.telegram import PendingMessage
+    from src.storage import repository as repo
+
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    class _SqliteOutbox:
+        def pending(self):
+            return [PendingMessage(id=r["id"], text=r["text"])
+                    for r in repo.pending_notifications(conn)]
+
+        def remember(self, text: str) -> None:
+            repo.enqueue_notification(conn, text, _now())
+
+        def forget(self, message_id: int) -> None:
+            repo.delete_notification(conn, message_id)
+
+        def attempted(self, message_id: int, error: str) -> None:
+            repo.mark_notification_attempt(conn, message_id, _now(), error)
+
+    return _SqliteOutbox()
 
 
 # --------------------------------------------------------------------------- #
@@ -350,7 +384,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     try:
         src_row = _ensure_tracked_source(conn, args.source, args.url, kind, args.note)
         events = tracker.ingest_raws(conn, src_row, raws)
-        TelegramNotifier.from_settings(settings).notify(events, _meta_lookup(conn))
+        TelegramNotifier.from_settings(
+            settings, outbox=_make_outbox(conn)
+        ).notify(events, _meta_lookup(conn))
     finally:
         conn.close()
 
@@ -409,7 +445,9 @@ def cmd_grab(args: argparse.Namespace) -> int:
                 except Exception as exc:  # noqa: BLE001 - one bad tab must not abort
                     print(f"  · skipped a tab ({type(exc).__name__})")
             browser.close()  # detaches; does NOT close your Chrome
-        TelegramNotifier.from_settings(settings).notify(all_events, _meta_lookup(conn))
+        TelegramNotifier.from_settings(
+            settings, outbox=_make_outbox(conn)
+        ).notify(all_events, _meta_lookup(conn))
     finally:
         conn.close()
 

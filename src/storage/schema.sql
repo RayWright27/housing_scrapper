@@ -56,3 +56,20 @@ CREATE TABLE IF NOT EXISTS source_listings (
     is_linked          INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (tracked_source_id, listing_id)
 );
+
+-- Outbox for Telegram pushes that could not be delivered (e.g. no connectivity
+-- when a price change was detected). The price is already persisted, but losing
+-- the notification is annoying: on a send failure the notifier stores the
+-- rendered message here and replays the backlog (oldest first) the next time a
+-- send succeeds. Transient operational state, not durable history.
+CREATE TABLE IF NOT EXISTS pending_notifications (
+    id              INTEGER PRIMARY KEY,
+    text            TEXT    NOT NULL,          -- fully-rendered message body
+    created_at      TEXT    NOT NULL,          -- ISO-8601 UTC (when queued)
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,                      -- ISO-8601 UTC, nullable
+    last_error      TEXT                       -- exception type name (redacted)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_notifications_created
+    ON pending_notifications (created_at, id);

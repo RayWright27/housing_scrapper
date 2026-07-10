@@ -100,7 +100,10 @@ realty-tracker/
 
 ## 5. Data model
 
-Three tables. Treat `schema.sql` as the single source of truth for DDL.
+Three core tables (below), plus two operational tables — `source_listings`
+(source↔listing links + the consecutive-miss counter that drives delisting,
+§8.7) and `pending_notifications` (the Telegram outbox, §9b). Treat `schema.sql`
+as the single source of truth for DDL.
 
 **`tracked_sources`** — the fixed list of things to watch.
 | column      | type    | notes                                  |
@@ -146,6 +149,19 @@ Three tables. Treat `schema.sql` as the single source of truth for DDL.
 Index on `(listing_id, observed_at)`. **Never UPDATE a price row — only INSERT.**
 A price "change" is the difference between the newest observation and the
 previous newest for that listing.
+
+**`pending_notifications`** — the Telegram outbox (§9b). Transient operational
+state, not durable history. A message that fails to send (e.g. Telegram
+unreachable, no VPN) is queued here as fully-rendered text and replayed, oldest
+first, the next time a send succeeds.
+| column          | type    | notes                                  |
+|-----------------|---------|----------------------------------------|
+| id              | INTEGER | PK                                     |
+| text            | TEXT    | fully-rendered message body            |
+| created_at      | TEXT    | ISO-8601 UTC (when queued)             |
+| attempts        | INTEGER | delivery attempts so far               |
+| last_attempt_at | TEXT    | ISO-8601 UTC, nullable                 |
+| last_error      | TEXT    | exception type name (redacted)         |
 
 ## 6. Adapter contract
 
@@ -283,6 +299,15 @@ Unchanged in role: on a "price changed" or "delisted" event from `tracker.py`,
 send a short message (old → new, delta, percent, link). It does not serve the
 history UI; the dashboard does. Telegram stays optional — if no token is
 configured, the system runs dashboard-only without error.
+
+Delivery is best-effort but does not lose messages: a failed send (Telegram
+unreachable) is stored in the `pending_notifications` outbox and replayed,
+oldest first, at the start of the next `notify` (i.e. the next run-once / grab /
+ingest). The outbox is a DB-free injected port on the notifier — the concrete,
+DB-backed implementation is built at the CLI seam in `main.py`, so the Telegram
+layer keeps no DB access (§2). This stays within §9's "add/deactivate
+`tracked_sources` is the only write" spirit: the outbox is the notifier's own
+delivery bookkeeping, not business state.
 
 ## 10. Configuration & secrets
 
