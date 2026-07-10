@@ -8,18 +8,19 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
-$py = Join-Path $root "venv\Scripts\python.exe"
+$py = Join-Path $root ".venv\Scripts\python.exe"
+if (-not (Test-Path $py)) { $py = Join-Path $root "venv\Scripts\python.exe" }
 if (-not (Test-Path $py)) { $py = "python" }
 $profileDir = Join-Path $root "data\chrome-grab"
 
 # --- locate Chrome ---
 $chrome = @(
-    "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+    "C:\Program Files\Google\Chrome\Application\chrome.exe",
     "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
     "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $chrome) { $chrome = (Get-Command chrome.exe -ErrorAction SilentlyContinue).Source }
-if (-not $chrome) { Write-Error "Chrome not found — edit the path at the top of this script."; exit 1 }
+if (-not $chrome) { Write-Error "Chrome not found - edit the path at the top of this script."; exit 1 }
 
 # --- gather the Avito URLs we already track ---
 $urls = @(& $py -m src.main urls --source avito) | Where-Object { $_ -and $_.Trim() }
