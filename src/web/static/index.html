@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Realty Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <style>
   /* Light theme (default) */
   :root { --bg:#f4f6fb; --card:#ffffff; --line:#e2e6f0; --fg:#1a1f36; --muted:#5a6485;
@@ -44,6 +46,15 @@
   .chip.on { border-color:var(--accent); }
   .chip .dot { width:9px; height:9px; border-radius:50%; }
   .controls { display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  /* External, scrollable legend so many series never overlap the plot. */
+  .legend { display:flex; flex-wrap:wrap; gap:6px 16px; max-height:104px; overflow-y:auto;
+            margin:4px 0 10px; padding:2px; }
+  .legend .li { display:flex; align-items:center; gap:7px; font-size:12px; cursor:pointer;
+                color:var(--fg); user-select:none; }
+  .legend .li.off { opacity:.38; }
+  .legend .sw { width:16px; height:4px; border-radius:2px; flex:0 0 auto; }
+  /* The plot lives in a height-controlled box (JS grows it with series count). */
+  .chartbox { position:relative; width:100%; height:300px; }
   .muted { color:var(--muted); } .empty { color:var(--muted); padding:16px 0; }
   .detail dl { display:grid; grid-template-columns:auto auto; gap:4px 18px; margin:0; }
   .detail dt { color:var(--muted); } .detail dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
@@ -55,6 +66,7 @@
   <div class="top">
     <h1>🏠 Realty Tracker <span class="muted" style="font-size:12px" id="subtitle"></span></h1>
     <div class="toolbar">
+      <button class="primary" id="refreshBtn"></button>
       <select id="lang"><option value="ru">RU</option><option value="en">EN</option></select>
       <button class="icon" id="themeBtn" title="theme"></button>
     </div>
@@ -78,6 +90,10 @@
   <!-- 3. chart section -->
   <div class="panel">
     <h2 id="h_history"></h2>
+    <div class="controls" style="margin-bottom:6px">
+      <button class="icon" id="selectAllBtn"></button>
+      <button class="icon" id="clearAllBtn"></button>
+    </div>
     <div class="chips" id="chips"></div>
     <div class="controls">
       <label><span id="lbl_range"></span>
@@ -86,9 +102,11 @@
       <label><span id="lbl_yaxis"></span>
         <select id="ymode"><option value="rub"></option><option value="m2"></option><option value="pct"></option></select>
       </label>
+      <button class="icon" id="autoscaleBtn"></button>
       <span class="muted" id="chartHint"></span>
     </div>
-    <canvas id="chart" height="120"></canvas>
+    <div id="legend" class="legend"></div>
+    <div id="chartBox" class="chartbox"><canvas id="chart"></canvas></div>
   </div>
 
   <!-- 4. detail panel -->
@@ -124,6 +142,11 @@ const I18N = {
     err_unknown_host:"Неизвестный хост — нужна ссылка cian.ru или avito.ru.",
     err_generic:m=>"Ошибка: "+m, load_error:m=>"Ошибка загрузки: "+m,
     date_locale:"ru-RU", theme_to_dark:"🌙", theme_to_light:"☀️",
+    btn_refresh:"🔄 Обновить", refreshing:"Обновляем CIAN…",
+    refresh_result:o=>`CIAN: загружено ${o.fetched}, изменений цены ${o.changed}.`
+      + (o.avito_launched ? " Avito: grab открыт в отдельной консоли — дождитесь загрузки вкладок и нажмите там Enter." : ""),
+    refresh_err:m=>"Не удалось обновить: "+m,
+    lbl_selectall:"Выбрать всё", lbl_clearall:"Снять всё", btn_autoscale:"⤢ Сброс зума",
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -149,6 +172,11 @@ const I18N = {
     err_unknown_host:"Unrecognized host — expected a cian.ru or avito.ru URL.",
     err_generic:m=>"Error: "+m, load_error:m=>"Load error: "+m,
     date_locale:"en-GB", theme_to_dark:"🌙", theme_to_light:"☀️",
+    btn_refresh:"🔄 Refresh", refreshing:"Refreshing CIAN…",
+    refresh_result:o=>`CIAN: fetched ${o.fetched}, price changes ${o.changed}.`
+      + (o.avito_launched ? " Avito: grab opened in a separate console — let the tabs load and press Enter there." : ""),
+    refresh_err:m=>"Refresh failed: "+m,
+    lbl_selectall:"Select all", lbl_clearall:"Clear all", btn_autoscale:"⤢ Reset zoom",
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -186,6 +214,10 @@ function applyStaticText(){
   document.querySelector("input[name=url]").placeholder = t("ph_url");
   document.querySelector("input[name=note]").placeholder = t("ph_note");
   const btn = document.getElementById("addBtn"); if(!btn.disabled) btn.textContent = t("btn_add");
+  const rb = document.getElementById("refreshBtn"); if(!rb.disabled) rb.textContent = t("btn_refresh");
+  document.getElementById("selectAllBtn").textContent = t("lbl_selectall");
+  document.getElementById("clearAllBtn").textContent = t("lbl_clearall");
+  document.getElementById("autoscaleBtn").textContent = t("btn_autoscale");
   document.getElementById("lbl_range").textContent = t("lbl_range");
   document.getElementById("lbl_yaxis").textContent = t("lbl_yaxis");
   const rsel = document.getElementById("range").options;
@@ -281,17 +313,52 @@ async function refreshChart(){
 function drawChart(datasets, mode){
   const ctx=document.getElementById("chart");
   if(chart) chart.destroy();
-  const muted=cssVar("--muted")||"#5a6485", fg=cssVar("--fg")||"#1a1f36", grid=cssVar("--grid")||"#eceff6";
+  const muted=cssVar("--muted")||"#5a6485", grid=cssVar("--grid")||"#eceff6";
   const loc=t("date_locale");
-  const yfmt = mode==="pct" ? (v=>v.toFixed(0)+"%") : (v=>new Intl.NumberFormat("ru-RU").format(Math.round(v)));
+  const nf=new Intl.NumberFormat("ru-RU");
+  const yfmt = mode==="pct" ? (v=>v.toFixed(0)+"%") : (v=>nf.format(Math.round(v)));
+  // Grow the plot with the number of series so flat lines at nearby prices stay
+  // separable; the external legend scrolls, so it never eats the plot (point 3).
+  document.getElementById("chartBox").style.height =
+    Math.min(660, Math.max(300, 80 + datasets.length*26)) + "px";
   chart=new Chart(ctx,{ type:"line", data:{datasets},
-    options:{ responsive:true, animation:false, parsing:false,
-      scales:{ x:{ type:"linear", ticks:{ color:muted, callback:v=>new Date(v).toLocaleDateString(loc,{day:"2-digit",month:"short"}) }, grid:{color:grid} },
-               y:{ ticks:{ color:muted, callback:yfmt }, grid:{color:grid} } },
-      plugins:{ legend:{ labels:{ color:fg } },
-        tooltip:{ callbacks:{ title:i=>new Date(i[0].parsed.x).toLocaleDateString(loc),
-          label:c=> c.dataset.label+": "+(mode==="pct"?c.parsed.y.toFixed(1)+"%":new Intl.NumberFormat("ru-RU").format(Math.round(c.parsed.y))+(mode==="m2"?" ₽/"+t("unit_m2"):" ₽")) } } } } });
+    options:{ responsive:true, maintainAspectRatio:false, animation:false, parsing:false,
+      interaction:{ mode:"nearest", intersect:false },
+      scales:{
+        x:{ type:"linear",
+            ticks:{ color:muted, maxRotation:0, autoSkip:true, callback:function(v){
+              const d=new Date(v);
+              // When zoomed under ~1 day, add the time so points are readable (point 5).
+              return (this.max-this.min) < 86400000
+                ? d.toLocaleString(loc,{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})
+                : d.toLocaleDateString(loc,{day:"2-digit",month:"short"});
+            } },
+            grid:{color:grid} },
+        y:{ ticks:{ color:muted, callback:yfmt }, grid:{color:grid} } },
+      plugins:{
+        legend:{ display:false },   // rendered as external scrollable HTML instead
+        tooltip:{ callbacks:{
+          title:i=>new Date(i[0].parsed.x).toLocaleString(loc,{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}),
+          label:c=> c.dataset.label+": "+(mode==="pct"?c.parsed.y.toFixed(1)+"%":nf.format(Math.round(c.parsed.y))+(mode==="m2"?" ₽/"+t("unit_m2"):" ₽")) } },
+        zoom:{
+          zoom:{ wheel:{enabled:true}, pinch:{enabled:true}, drag:{enabled:true, modifierKey:"shift"}, mode:"xy" },
+          pan:{ enabled:true, mode:"xy" } } } } });
+  renderLegend(datasets);
 }
+
+// External legend (scrollable, never overlaps the plot). Click toggles a series.
+function renderLegend(datasets){
+  const box=document.getElementById("legend");
+  box.innerHTML = datasets.map((ds,i)=>
+    `<span class="li" data-i="${i}"><span class="sw" style="background:${ds.borderColor}"></span>${ds.label}</span>`).join("");
+  box.querySelectorAll(".li").forEach(el=>el.onclick=()=>{
+    const i=+el.dataset.i, vis=chart.isDatasetVisible(i);
+    chart.setDatasetVisibility(i, !vis); el.classList.toggle("off", vis); chart.update();
+  });
+}
+function selectAllChips(){ SELECTED=new Set(LISTINGS.map(l=>l.id)); renderChips(); refreshChart(); }
+function clearAllChips(){ SELECTED=new Set(); renderChips(); refreshChart(); }
+function resetZoom(){ if(chart) chart.resetZoom(); }
 
 function renderDetail(id){
   const box=document.getElementById("detail");
@@ -335,10 +402,27 @@ async function removeTracked(d, btn){
   catch(e){ alert(t("err_remove")); btn.disabled=false; }
 }
 
+async function doRefresh(){
+  const btn=document.getElementById("refreshBtn"), msg=document.getElementById("addMsg");
+  btn.disabled=true; btn.textContent=t("refreshing"); msg.textContent=t("refreshing");
+  try{
+    const r=await fetch("/api/refresh",{method:"POST"});
+    const body=await r.json();
+    if(!r.ok) throw new Error(body.detail||r.statusText);
+    msg.textContent=t("refresh_result")(body);
+    await loadAll();
+  }catch(e){ msg.textContent=t("refresh_err")(e.message); }
+  finally{ btn.disabled=false; btn.textContent=t("btn_refresh"); }
+}
+
+document.getElementById("refreshBtn").onclick=doRefresh;
 document.getElementById("addBtn").onclick=addTracked;
 document.querySelector("input[name=url]").addEventListener("keydown",e=>{ if(e.key==="Enter") addTracked(); });
 document.getElementById("range").onchange=refreshChart;
 document.getElementById("ymode").onchange=refreshChart;
+document.getElementById("selectAllBtn").onclick=selectAllChips;
+document.getElementById("clearAllBtn").onclick=clearAllChips;
+document.getElementById("autoscaleBtn").onclick=resetZoom;
 document.getElementById("themeBtn").onclick=toggleTheme;
 document.getElementById("lang").onchange=e=>{ LANG=e.target.value; localStorage.setItem("lang",LANG); applyStaticText(); renderAll(); };
 

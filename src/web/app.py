@@ -16,6 +16,11 @@ composition root), so a newly-tracked listing pings Telegram just like a
 ``run-once`` pass — respecting ``NOTIFY_ON_NEW`` and, with no connectivity,
 queueing to the outbox for later. The web layer stays thin: it does not format
 or send anything itself, only calls the injected seam.
+
+``POST /api/refresh`` runs one CIAN pass on demand (server-side) and kicks off
+the interactive Avito grab via another injected seam (``launch_avito_grab``):
+Avito needs a human to load its tabs / solve a challenge, so the grab runs in a
+separate console — the web request cannot do that headlessly (§7).
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 ConnFactory = Callable[[], ContextManager]
 AdapterFactory = Callable[[str], ContextManager]  # source -> ctx yielding adapter|None
 NotifySink = Callable[[object, list], None]        # (conn, events) -> None
+GrabLauncher = Callable[[], bool]                   # kick off the Avito grab; True if started
 
 
 class AddBody(BaseModel):
@@ -50,12 +56,18 @@ def _no_notify(conn, events) -> None:
     """Default notify seam: do nothing (used by offline tests)."""
 
 
+def _no_grab() -> bool:
+    """Default Avito-grab launcher: do nothing (used by offline tests)."""
+    return False
+
+
 def create_app(
     *,
     get_conn: ConnFactory,
     build_adapter: AdapterFactory,
     settings,
     notify: NotifySink = _no_notify,
+    launch_avito_grab: GrabLauncher = _no_grab,
 ) -> FastAPI:
     app = FastAPI(title="Realty Tracker", docs_url=None, redoc_url=None)
 
@@ -123,6 +135,33 @@ def create_app(
         return {"tracked_id": tracked_id, "source": source, "kind": kind,
                 "fetched": fetched, "message": message}
 
+    @app.post("/api/refresh")
+    def api_refresh() -> dict:
+        """Run one CIAN tracking pass now (like `run-once`) and kick off the
+        interactive Avito grab. CIAN is fetched server-side; Avito needs a human
+        to load its tabs / solve a challenge, so we launch `avito-grab.ps1` in a
+        separate console where you finish it — the web request cannot do that
+        part headlessly (§7)."""
+        with get_conn() as conn:
+            with build_adapter("cian") as adapter:
+                events = []
+                if adapter is not None:
+                    events = tracker.run_once({"cian": adapter}, conn, settings)
+            # Notify on what the pass found (guarded — see api_add).
+            try:
+                notify(conn, events)
+            except Exception:  # noqa: BLE001 - delivery must not break refresh
+                logger.exception("notify seam raised during refresh; ignoring")
+            fetched = sum(1 for e in events if e.type == tracker.EventType.NOW_TRACKING)
+            changed = sum(1 for e in events if e.type == tracker.EventType.PRICE_CHANGED)
+        avito_launched = False
+        try:
+            avito_launched = bool(launch_avito_grab())
+        except Exception:  # noqa: BLE001 - a launch failure must not fail refresh
+            logger.exception("failed to launch the Avito grab")
+        return {"cian_events": len(events), "fetched": fetched, "changed": changed,
+                "avito_launched": avito_launched}
+
     @app.delete("/api/tracked/{tracked_id}")
     def api_remove(tracked_id: int) -> dict:
         with get_conn() as conn:
@@ -178,5 +217,26 @@ def build_production_app():
     def notify(conn, events) -> None:
         sink.notify_events(conn, events, settings)
 
+    def launch_avito_grab() -> bool:
+        """Open the interactive Avito grab (scripts/avito-grab.ps1) in its own
+        console window, so the user can load the tabs / solve a challenge and
+        press Enter there — exactly as running the script by hand."""
+        import subprocess
+        import sys
+
+        script = Path(__file__).resolve().parents[2] / "scripts" / "avito-grab.ps1"
+        if not script.exists():
+            logger.warning("avito-grab.ps1 not found at %s; skipping Avito", script)
+            return False
+        # CREATE_NEW_CONSOLE (0x10) gives the interactive script its own window.
+        creationflags = 0x00000010 if sys.platform == "win32" else 0
+        subprocess.Popen(  # noqa: S603 - fixed local script, no user input
+            ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            cwd=str(script.parents[1]),
+            creationflags=creationflags,
+        )
+        return True
+
     return create_app(get_conn=get_conn, build_adapter=build_adapter,
-                       settings=settings, notify=notify)
+                       settings=settings, notify=notify,
+                       launch_avito_grab=launch_avito_grab)

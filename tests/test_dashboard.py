@@ -224,6 +224,35 @@ def test_dashboard_add_notifies_via_injected_seam(conn) -> None:
     assert "now_tracking" in types  # the new listing was announced to the seam
 
 
+def test_refresh_runs_cian_pass_and_launches_avito(conn) -> None:
+    from fastapi.testclient import TestClient
+
+    from src.web.app import create_app
+
+    @contextmanager
+    def get_conn():
+        yield conn
+
+    @contextmanager
+    def build_adapter(source):
+        yield FakeCian() if source == "cian" else None
+
+    launched = []
+    settings = SimpleNamespace(delist_after_misses=3)
+    app = create_app(get_conn=get_conn, build_adapter=build_adapter, settings=settings,
+                     launch_avito_grab=lambda: (launched.append(1), True)[1])
+    client = TestClient(app)
+
+    # a tracked CIAN listing that the pass will fetch via the fake adapter
+    repo.add_tracked_source(conn, "cian", "https://spb.cian.ru/sale/flat/777/", "listing")
+
+    body = client.post("/api/refresh").json()
+    assert body["fetched"] == 1                # the CIAN pass ran and found it
+    assert body["avito_launched"] is True      # the Avito grab was kicked off
+    assert launched == [1]
+    assert client.get("/api/listings").json()[0]["external_id"] == "777"
+
+
 def test_dashboard_add_notify_failure_does_not_break_add(conn) -> None:
     # A delivery problem in the seam must never fail the add itself: the source
     # is already persisted, so the endpoint guards the notify call defensively.

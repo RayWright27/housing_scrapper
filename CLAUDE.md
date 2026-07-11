@@ -296,6 +296,11 @@ API shape (keep it this simple):
   notify (via the injected seam) on what the fetch found.
 - `DELETE /api/tracked/{id}` — deactivate (set `active=0`); never hard-delete
   history.
+- `POST /api/refresh` — run one CIAN pass now (like `run-once`) and notify on
+  what it finds; also launch the interactive Avito grab (`avito-grab.ps1`) in a
+  separate console, since that step needs a human to load tabs / solve a
+  challenge and cannot run headlessly (§7). The launcher is an injected seam
+  (a no-op in tests), like `notify` — the web layer itself spawns nothing.
 
 Computed fields (₽/m², Δ total, medians, days-since-change) are derived in the
 API/repository layer from `listings` + `price_history` — they are NOT stored
