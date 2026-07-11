@@ -109,9 +109,9 @@ def _label(event: Event, meta: ListingMeta | None) -> str:
     parts: list[str] = []
     if meta is not None:
         if meta.rooms is not None:
-            parts.append("studio" if meta.rooms == 0 else f"{meta.rooms}-room")
+            parts.append("студия" if meta.rooms == 0 else f"{meta.rooms}-комн.")
         if meta.area_total is not None:
-            parts.append(f"{meta.area_total:g}{NB}m²")
+            parts.append(f"{meta.area_total:g}{NB}м²")
     if event.note:
         parts.append(f"«{_esc(event.note)}»")
     return " · ".join(parts) if parts else _esc(event.external_id)
@@ -131,7 +131,7 @@ def _link(event: Event) -> str:
 def _price_per_m2(price: int, meta: ListingMeta | None) -> str | None:
     if meta is None or not meta.area_total:
         return None
-    return _rub(round(price / meta.area_total)) + "/m²"
+    return _rub(round(price / meta.area_total)) + "/м²"
 
 
 def format_price_changed(event: Event, meta: ListingMeta | None) -> str:
@@ -140,7 +140,7 @@ def format_price_changed(event: Event, meta: ListingMeta | None) -> str:
     delta = f"{event.delta:+,}".replace(",", NB) + NB + "₽"  # keep explicit sign
     pct = f"{event.percent:+.1f}%"
     return (
-        f"{arrow} Price changed ({pct}) · {_src(event)}\n"
+        f"{arrow} Цена изменилась ({pct}) · {_src(event)}\n"
         f"{_label(event, meta)}\n"
         f"{_rub(event.old_price)} → {_rub(event.new_price)} ({delta})\n"
         f"{_link(event)}"
@@ -150,7 +150,7 @@ def format_price_changed(event: Event, meta: ListingMeta | None) -> str:
 def format_delisted(event: Event, meta: ListingMeta | None) -> str:
     # Neutral: a delisting often means sold, but we don't assert it as fact.
     return (
-        f"⚪️ Removed from listing · {_src(event)} (may be sold or withdrawn)\n"
+        f"⚪️ Снято с публикации · {_src(event)} (возможно, продано или снято)\n"
         f"{_label(event, meta)}\n"
         f"{_link(event)}"
     )
@@ -162,7 +162,7 @@ def format_now_tracking(event: Event, meta: ListingMeta | None) -> str:
     if per_m2 is not None:
         price_line += f" (≈ {per_m2})"
     return (
-        f"\U0001f195 Now tracking · {_src(event)}\n"
+        f"\U0001f195 Отслеживаем · {_src(event)}\n"
         f"{_label(event, meta)}\n"
         f"{price_line}\n"
         f"{_link(event)}"

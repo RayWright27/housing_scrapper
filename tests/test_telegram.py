@@ -115,7 +115,7 @@ def test_price_changed_down_has_math_direction_and_link() -> None:
     assert "-800 000 ₽" in text                                # delta rubles
     assert "-5.4%" in text                                     # percent
     assert '<a href="https://spb.cian.ru/sale/flat/1/">' in text
-    assert "2-room · 56.6 m² · «my flat»" in text
+    assert "2-комн. · 56.6 м² · «my flat»" in text
 
 
 def test_price_changed_up_uses_up_arrow_and_positive_signs() -> None:
@@ -128,28 +128,28 @@ def test_price_changed_up_uses_up_arrow_and_positive_signs() -> None:
 def test_now_tracking_includes_rounded_price_per_m2() -> None:
     text = N(format_now_tracking(now_tracking(14_800_000), META))
     # 14_800_000 / 56.6 = 261_484.1... -> rounded
-    assert "261 484 ₽/m²" in text
+    assert "261 484 ₽/м²" in text
     assert "14 800 000 ₽" in text
 
 
 def test_now_tracking_omits_price_per_m2_when_area_missing() -> None:
     text = N(format_now_tracking(now_tracking(), ListingMeta(rooms=2, area_total=None)))
-    assert "/m²" not in text
+    assert "/м²" not in text
     assert "14 800 000 ₽" in text
 
 
 def test_studio_and_missing_meta_label_gracefully() -> None:
     studio = format_now_tracking(now_tracking(), ListingMeta(rooms=0, area_total=30.0))
-    assert "studio" in studio
+    assert "студия" in studio
     no_meta = format_now_tracking(now_tracking(), None)
     assert "«my flat»" in no_meta  # falls back to the note
 
 
 def test_delisted_is_neutral_and_does_not_assert_sold() -> None:
     text = format_delisted(delisted(), META)
-    assert "may be sold or withdrawn" in text
-    # neutral: never states it as a fact
-    assert "sold." not in text.lower()
+    assert "возможно, продано или снято" in text
+    # neutral: hedged ("возможно"), never states removal as a definite sale
+    assert "продано." not in text
 
 
 def test_messages_show_the_source() -> None:
@@ -188,7 +188,7 @@ def test_relevant_events_are_sent_with_formatted_text() -> None:
     transport = FakeTransport()
     _notifier(transport).notify([price_changed()], lambda _l: META)
     assert len(transport.sent) == 1
-    assert "Price changed" in transport.sent[0][1]
+    assert "Цена изменилась" in transport.sent[0][1]
 
 
 def test_now_tracking_suppressed_when_notify_on_new_false() -> None:
@@ -198,7 +198,7 @@ def test_now_tracking_suppressed_when_notify_on_new_false() -> None:
     )
     # only the price change goes out; the new-listing event is skipped
     assert len(transport.sent) == 1
-    assert "Price changed" in transport.sent[0][1]
+    assert "Цена изменилась" in transport.sent[0][1]
 
 
 def test_send_failure_is_swallowed_and_retried_but_never_raises() -> None:
@@ -225,7 +225,7 @@ def test_failed_send_is_queued_not_dropped() -> None:
     pending = outbox.pending()
     assert len(pending) == 1                       # not dropped — it is queued
     assert pending[0].chat_id == "chat"
-    assert "Price changed" in pending[0].text
+    assert "Цена изменилась" in pending[0].text
 
 
 def test_backlog_is_replayed_when_connection_returns() -> None:
@@ -238,7 +238,7 @@ def test_backlog_is_replayed_when_connection_returns() -> None:
     transport.fail = False                                # VPN comes back
     notifier.notify([], lambda _l: META)                  # any next pass flushes
     assert outbox.pending() == []                         # delivered and forgotten
-    assert any("Price changed" in t for _c, t in transport.sent)
+    assert any("Цена изменилась" in t for _c, t in transport.sent)
 
 
 def test_backlog_is_flushed_before_new_events() -> None:
@@ -248,7 +248,7 @@ def test_backlog_is_flushed_before_new_events() -> None:
     _notifier(transport, outbox=outbox).notify([now_tracking()], lambda _l: META)
     assert outbox.pending() == []                  # backlog cleared
     assert transport.sent[0][1] == "QUEUED-OLD"    # replayed FIRST (chronological)
-    assert "Now tracking" in transport.sent[1][1]  # the new event goes out AFTER
+    assert "Отслеживаем" in transport.sent[1][1]  # the new event goes out AFTER
 
 
 def test_offline_retains_backlog_and_queues_new_events() -> None:
@@ -258,7 +258,7 @@ def test_offline_retains_backlog_and_queues_new_events() -> None:
     _notifier(transport, outbox=outbox).notify([now_tracking()], lambda _l: META)
     texts = [m.text for m in outbox.pending()]
     assert "QUEUED-OLD" in texts                   # existing backlog kept
-    assert any("Now tracking" in t for t in texts)  # new event queued too
+    assert any("Отслеживаем" in t for t in texts)  # new event queued too
     assert outbox.attempts == [1]                  # the backlog replay was tried once
 
 
