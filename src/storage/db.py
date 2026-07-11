@@ -29,8 +29,28 @@ def connect(db_path: str = ":memory:") -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Small pre-bootstrap migrations for shape changes ``CREATE IF NOT EXISTS``
+    cannot make on an existing table.
+
+    ``pending_notifications`` gained a ``chat_id`` column (one row per recipient).
+    A pre-existing table without it holds only transient, undelivered notices, so
+    we drop it and let :func:`bootstrap` recreate it in the current shape — no
+    durable history is lost (the outbox is not history)."""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'pending_notifications'"
+    ).fetchone()
+    if row is None:
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_notifications)")}
+    if "chat_id" not in cols:
+        conn.execute("DROP TABLE pending_notifications")
+
+
 def bootstrap(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes from ``schema.sql`` (idempotent)."""
+    _migrate(conn)
     ddl = SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(ddl)
     conn.commit()

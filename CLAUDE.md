@@ -153,10 +153,14 @@ previous newest for that listing.
 **`pending_notifications`** — the Telegram outbox (§9b). Transient operational
 state, not durable history. A message that fails to send (e.g. Telegram
 unreachable, no VPN) is queued here as fully-rendered text and replayed, oldest
-first, the next time a send succeeds.
+first, the next time a send succeeds. **One row per (message, recipient)**: a
+message with several recipients is queued only for the chats it actually failed
+to reach, so a replay never re-sends to a recipient that already got it (no
+duplicate on partial delivery).
 | column          | type    | notes                                  |
 |-----------------|---------|----------------------------------------|
 | id              | INTEGER | PK                                     |
+| chat_id         | TEXT    | the single recipient this row is for   |
 | text            | TEXT    | fully-rendered message body            |
 | created_at      | TEXT    | ISO-8601 UTC (when queued)             |
 | attempts        | INTEGER | delivery attempts so far               |
@@ -324,8 +328,11 @@ delivery bookkeeping, not business state.
 - Required keys: `DB_PATH`, `POLL_INTERVAL_HOURS`, `WEB_HOST` (default
   `127.0.0.1`), `WEB_PORT` (default `8000`), and proxy vars if used
   (`PROXY_URL` or empty).
-- Optional keys: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — if absent, Telegram
-  notifications are disabled and the rest still runs.
+- Optional keys: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — if either is absent,
+  Telegram notifications are disabled and the rest still runs. `TELEGRAM_CHAT_ID`
+  may list **several** recipients, comma-separated; every id receives each
+  message (a bot reaches only chats it is told about, so each recipient must
+  message the bot once — use the `chat-ids` command to discover their id).
 - Never log token values, proxy credentials, or full cookies. Redact in logs.
 
 ## 11. Commands
@@ -351,6 +358,9 @@ python -m src.main run
 
 # start the local web dashboard at http://WEB_HOST:WEB_PORT
 python -m src.main serve
+
+# discover recipient chat ids (each person messages the bot first, then run this)
+python -m src.main chat-ids
 
 # tests
 pytest -q

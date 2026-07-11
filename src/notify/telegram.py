@@ -24,10 +24,11 @@ from __future__ import annotations
 import html
 import logging
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 
 from src.tracker import Event, EventType
 
@@ -37,27 +38,39 @@ PARSE_MODE = "HTML"
 # Non-breaking space (U+00A0) for money/units so a grouped number never wraps
 # mid-value in the Telegram message (the Russian typographic convention).
 NB = " "
-Transport = Callable[[str], None]
+# A transport delivers one rendered message to ONE recipient: (chat_id, text).
+# It raises PermanentSendError when that recipient will never accept the message
+# (bad id / bot not started / blocked); any other exception is treated as a
+# transient failure worth queueing and retrying.
+Transport = Callable[[str, str], None]
 MetaLookup = Callable[[int], "ListingMeta | None"]
+
+
+class PermanentSendError(Exception):
+    """A recipient rejected the message for good (not worth retrying/queueing)."""
 
 
 @dataclass(frozen=True)
 class PendingMessage:
-    """One rendered, undelivered message replayed from the outbox."""
+    """One rendered, undelivered message for one recipient, replayed from the
+    outbox. Queuing is per-recipient so a replay never re-sends to a chat that
+    already received the message."""
 
     id: int
+    chat_id: str
     text: str
 
 
 class Outbox(Protocol):
-    """A persistent queue of messages that failed to send (CLAUDE.md §2, §9b).
+    """A persistent queue of (recipient, message) pairs that failed to send
+    (CLAUDE.md §2, §9b).
 
     Injected so this module stays DB-free: the concrete implementation lives at
     the CLI seam (``main.py``) over the repository, exactly like ``get_meta``.
     """
 
     def pending(self) -> list[PendingMessage]: ...
-    def remember(self, text: str) -> None: ...
+    def remember(self, chat_id: str, text: str) -> None: ...
     def forget(self, message_id: int) -> None: ...
     def attempted(self, message_id: int, error: str) -> None: ...
 
@@ -170,11 +183,27 @@ def format_event(event: Event, meta: ListingMeta | None) -> str | None:
 # --------------------------------------------------------------------------- #
 # thin send layer (network; injectable transport)
 # --------------------------------------------------------------------------- #
-def _http_transport(token: str, chat_id: str, timeout: float) -> Transport:
-    """Build a transport that POSTs one message to the Bot API via stdlib."""
+def _as_chat_list(chat_ids: str | Sequence[str] | None) -> list[str]:
+    """Normalize a single id or a sequence of ids to a list (empty if none)."""
+    if not chat_ids:
+        return []
+    if isinstance(chat_ids, str):
+        return [chat_ids]
+    return [c for c in chat_ids if c]
+
+
+def _http_transport(token: str, timeout: float) -> Transport:
+    """Build a transport that POSTs one message to ONE recipient via stdlib.
+
+    Delivery is per-recipient so the notifier can queue and replay each chat
+    independently (no duplicate on partial delivery). Failure classes:
+    - HTTP 4xx from Telegram (bad id, or the recipient never started / blocked
+      the bot) -> :class:`PermanentSendError`: never worth retrying.
+    - a network error (no connectivity — e.g. VPN off) propagates as-is and is
+      treated as transient: the notifier queues it and replays later."""
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    def send(text: str) -> None:
+    def send(chat_id: str, text: str) -> None:
         data = urllib.parse.urlencode(
             {
                 "chat_id": chat_id,
@@ -184,9 +213,12 @@ def _http_transport(token: str, chat_id: str, timeout: float) -> Transport:
             }
         ).encode("utf-8")
         req = urllib.request.Request(endpoint, data=data)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            if resp.status != 200:
-                raise RuntimeError(f"telegram HTTP {resp.status}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                if resp.status != 200:
+                    raise RuntimeError(f"telegram HTTP {resp.status}")
+        except urllib.error.HTTPError as exc:  # 4xx/5xx: recipient rejected it
+            raise PermanentSendError(f"HTTP {exc.code}") from exc
 
     return send
 
@@ -197,7 +229,7 @@ class TelegramNotifier:
     def __init__(
         self,
         token: str | None,
-        chat_id: str | None,
+        chat_ids: str | Sequence[str] | None,
         *,
         notify_on_new: bool = True,
         transport: Transport | None = None,
@@ -206,7 +238,10 @@ class TelegramNotifier:
         max_attempts: int = 2,
         retry_delay: float = 1.0,
     ) -> None:
-        self.enabled = bool(token and chat_id)
+        # Accept a single id (str) or many (sequence); a message is delivered to
+        # every recipient. A bot reaches only chats it is explicitly told about.
+        self._recipients = _as_chat_list(chat_ids)
+        self.enabled = bool(token and self._recipients)
         self.notify_on_new = notify_on_new
         self._outbox = outbox
         self._max_attempts = max(1, max_attempts)
@@ -214,7 +249,7 @@ class TelegramNotifier:
         if transport is not None:
             self._transport: Transport | None = transport
         elif self.enabled:
-            self._transport = _http_transport(token, chat_id, timeout)  # type: ignore[arg-type]
+            self._transport = _http_transport(token, timeout)  # type: ignore[arg-type]
         else:
             self._transport = None
 
@@ -228,19 +263,23 @@ class TelegramNotifier:
     ) -> "TelegramNotifier":
         return cls(
             settings.telegram_bot_token,
-            settings.telegram_chat_id,
+            settings.telegram_chat_ids,
             notify_on_new=settings.notify_on_new,
             transport=transport,
             outbox=outbox,
         )
 
     def notify(self, events, get_meta: MetaLookup) -> None:
-        """Format and send each relevant event. Never raises.
+        """Format and send each relevant event to every recipient. Never raises.
 
-        A send that fails (e.g. Telegram unreachable — no VPN) is not dropped:
-        the rendered message is queued in the outbox and replayed, oldest first,
-        the next time delivery succeeds. Any existing backlog is flushed before
-        this run's new events so messages keep their chronological order.
+        Delivery is tracked per recipient. A send that fails transiently (e.g.
+        Telegram unreachable — no VPN) is not dropped: that (recipient, message)
+        pair is queued in the outbox and replayed the next time delivery
+        succeeds — and ONLY for the recipients it did not reach, so a replay
+        never duplicates a message a chat already got. A permanent rejection
+        (bad id / bot not started) is logged and skipped, never queued. Any
+        existing backlog is flushed before this run's new events so messages
+        keep their chronological order.
         """
         if not self.enabled:
             logger.info("telegram disabled (no token/chat id) — skipping %d event(s)",
@@ -256,12 +295,15 @@ class TelegramNotifier:
             text = format_event(event, meta)
             if text is None:
                 continue
-            if online:
-                ok, _err = self._deliver(text)
-                if ok:
-                    continue
-                online = False  # connection just dropped mid-batch
-            self._queue(text)
+            for chat_id in self._recipients:
+                if online:
+                    status = self._deliver(chat_id, text)
+                    if status == "ok":
+                        continue
+                    if status == "permanent":
+                        continue  # a bad recipient — do not queue it
+                    online = False  # transient: connection just dropped
+                self._queue(chat_id, text)
 
     def _flush_pending(self) -> bool:
         """Replay queued messages oldest-first. Return False if Telegram is
@@ -272,38 +314,40 @@ class TelegramNotifier:
         if self._outbox is None:
             return True
         for item in self._outbox.pending():
-            ok, err = self._deliver(item.text)
-            if not ok:
-                self._outbox.attempted(item.id, err or "unknown")
+            status = self._deliver(item.chat_id, item.text)
+            if status == "transient":
+                self._outbox.attempted(item.id, "transient")
                 return False
+            # 'ok' delivered, or 'permanent' will never work — either way drop it.
             self._outbox.forget(item.id)
         return True
 
-    def _queue(self, text: str) -> None:
-        """Persist an undeliverable message for later, or drop it if no outbox."""
+    def _queue(self, chat_id: str, text: str) -> None:
+        """Persist an undeliverable message for one recipient, or drop if no outbox."""
         if self._outbox is not None:
-            self._outbox.remember(text)
+            self._outbox.remember(chat_id, text)
         else:
             logger.error("telegram send gave up after %d attempts and no outbox "
                          "is configured; event dropped (price already persisted)",
                          self._max_attempts)
 
-    def _deliver(self, text: str) -> tuple[bool, str | None]:
-        """Attempt one message with a small bounded retry. Never raises.
-
-        Returns ``(True, None)`` on success, or ``(False, error_type_name)`` after
-        exhausting attempts — the caller decides whether to queue it."""
+    def _deliver(self, chat_id: str, text: str) -> str:
+        """Send one message to one recipient with a small bounded retry. Never
+        raises. Returns ``"ok"``, ``"permanent"`` (recipient rejected it — do not
+        retry), or ``"transient"`` (network failure — worth queueing)."""
         assert self._transport is not None  # enabled implies a transport
-        error: str | None = None
         for attempt in range(1, self._max_attempts + 1):
             try:
-                self._transport(text)
-                return True, None
+                self._transport(chat_id, text)
+                return "ok"
+            except PermanentSendError as exc:
+                logger.error("telegram rejected a recipient (%s); skipping it — "
+                             "check its id / that it messaged the bot", exc)
+                return "permanent"
             except Exception as exc:  # noqa: BLE001 - delivery must never crash a run
                 # Log the failure REASON only — never the endpoint (embeds token).
-                error = type(exc).__name__
                 logger.warning("telegram send failed (attempt %d/%d): %s",
-                               attempt, self._max_attempts, error)
+                               attempt, self._max_attempts, type(exc).__name__)
                 if attempt < self._max_attempts:
                     time.sleep(self._retry_delay)
-        return False, error
+        return "transient"

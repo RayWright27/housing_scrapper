@@ -49,7 +49,10 @@ class Settings:
     web_port: int
     proxy_url: str | None
     telegram_bot_token: str | None
-    telegram_chat_id: str | None
+    # One or more recipient chat ids. A bot only delivers to chats it is told
+    # about — "subscribing" to the bot does nothing on its own; each recipient's
+    # id must be listed here (comma-separated in TELEGRAM_CHAT_ID).
+    telegram_chat_ids: tuple[str, ...]
     # Scraping etiquette (§7): randomized delay range between network hits,
     # media blocking (faster/politer), and a small cap on search pages.
     scrape_delay_min_sec: float
@@ -71,7 +74,7 @@ class Settings:
 
     @property
     def telegram_enabled(self) -> bool:
-        return bool(self.telegram_bot_token and self.telegram_chat_id)
+        return bool(self.telegram_bot_token and self.telegram_chat_ids)
 
 
 def _get_float(name: str, default: float) -> float:
@@ -88,6 +91,18 @@ def _get_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _get_list(name: str) -> tuple[str, ...]:
+    """Parse a comma/semicolon/whitespace-separated env var into a tuple.
+
+    Empty/unset -> empty tuple. A single value stays a one-element tuple, so a
+    plain ``TELEGRAM_CHAT_ID=123`` keeps working unchanged."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return ()
+    parts = raw.replace(";", ",").replace(" ", ",").split(",")
+    return tuple(p.strip() for p in parts if p.strip())
+
+
 def load_settings() -> Settings:
     """Build a :class:`Settings` from the current environment."""
     return Settings(
@@ -97,7 +112,7 @@ def load_settings() -> Settings:
         web_port=_get_int("WEB_PORT", 8000),
         proxy_url=_get_optional("PROXY_URL"),
         telegram_bot_token=_get_optional("TELEGRAM_BOT_TOKEN"),
-        telegram_chat_id=_get_optional("TELEGRAM_CHAT_ID"),
+        telegram_chat_ids=_get_list("TELEGRAM_CHAT_ID"),
         scrape_delay_min_sec=_get_float("SCRAPE_DELAY_MIN_SEC", 2.0),
         scrape_delay_max_sec=_get_float("SCRAPE_DELAY_MAX_SEC", 5.0),
         block_media=_get_bool("BLOCK_MEDIA", True),

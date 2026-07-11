@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import urllib.error
+
+import pytest
+
+from src.notify import telegram as tg
 from src.notify.telegram import (
     ListingMeta,
     PendingMessage,
+    PermanentSendError,
     TelegramNotifier,
     format_delisted,
     format_now_tracking,
@@ -44,19 +50,30 @@ def delisted() -> Event:
 
 
 class FakeTransport:
-    """Records the texts it is asked to send; can be told to fail.
+    """Per-recipient transport (chat_id, text). Records what it is asked to send.
 
     ``fail`` may be flipped between ``notify`` calls to simulate connectivity
-    coming back (e.g. the VPN being turned on)."""
+    coming back (VPN on). ``fail_for`` marks specific chat ids as failing (the
+    rest succeed) to simulate a partial delivery. ``permanent_for`` raises a
+    permanent rejection for the given chat ids."""
 
-    def __init__(self, fail: bool = False) -> None:
-        self.sent: list[str] = []
+    def __init__(self, fail: bool = False, *, fail_for=(), permanent_for=()) -> None:
+        self.sent: list[tuple[str, str]] = []  # (chat_id, text) that succeeded
+        self.attempts: list[tuple[str, str]] = []  # every call, success or not
         self.fail = fail
+        self.fail_for = set(fail_for)
+        self.permanent_for = set(permanent_for)
 
-    def __call__(self, text: str) -> None:
-        self.sent.append(text)  # records the attempt (even a failing one)
-        if self.fail:
+    def __call__(self, chat_id: str, text: str) -> None:
+        self.attempts.append((chat_id, text))
+        if chat_id in self.permanent_for:
+            raise PermanentSendError("HTTP 403")
+        if self.fail or chat_id in self.fail_for:
             raise RuntimeError("simulated telegram failure")
+        self.sent.append((chat_id, text))
+
+    def texts_for(self, chat_id: str) -> list[str]:
+        return [t for c, t in self.sent if c == chat_id]
 
 
 class FakeOutbox:
@@ -70,8 +87,8 @@ class FakeOutbox:
     def pending(self) -> list[PendingMessage]:
         return list(self._items)
 
-    def remember(self, text: str) -> None:
-        self._items.append(PendingMessage(id=self._next, text=text))
+    def remember(self, chat_id: str, text: str) -> None:
+        self._items.append(PendingMessage(id=self._next, chat_id=chat_id, text=text))
         self._next += 1
 
     def forget(self, message_id: int) -> None:
@@ -81,8 +98,9 @@ class FakeOutbox:
         self.attempts.append(message_id)
 
 
-def _notifier(transport, *, notify_on_new=True, max_attempts=2, outbox=None):
-    return TelegramNotifier("tok", "chat", notify_on_new=notify_on_new,
+def _notifier(transport, *, chat_ids="chat", notify_on_new=True, max_attempts=2,
+              outbox=None):
+    return TelegramNotifier("tok", chat_ids, notify_on_new=notify_on_new,
                             transport=transport, outbox=outbox,
                             max_attempts=max_attempts, retry_delay=0)
 
@@ -170,7 +188,7 @@ def test_relevant_events_are_sent_with_formatted_text() -> None:
     transport = FakeTransport()
     _notifier(transport).notify([price_changed()], lambda _l: META)
     assert len(transport.sent) == 1
-    assert "Price changed" in transport.sent[0]
+    assert "Price changed" in transport.sent[0][1]
 
 
 def test_now_tracking_suppressed_when_notify_on_new_false() -> None:
@@ -180,14 +198,15 @@ def test_now_tracking_suppressed_when_notify_on_new_false() -> None:
     )
     # only the price change goes out; the new-listing event is skipped
     assert len(transport.sent) == 1
-    assert "Price changed" in transport.sent[0]
+    assert "Price changed" in transport.sent[0][1]
 
 
 def test_send_failure_is_swallowed_and_retried_but_never_raises() -> None:
     transport = FakeTransport(fail=True)
     notifier = _notifier(transport, max_attempts=2)
     notifier.notify([price_changed()], lambda _l: META)  # must NOT raise
-    assert len(transport.sent) == 2  # bounded retry: attempted twice, then gave up
+    assert len(transport.attempts) == 2  # bounded retry: attempted twice, gave up
+    assert transport.sent == []          # nothing actually delivered
 
 
 def test_get_meta_none_still_sends() -> None:
@@ -197,7 +216,7 @@ def test_get_meta_none_still_sends() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# outbox: undeliverable messages are queued and replayed, never lost
+# outbox: undeliverable messages are queued per recipient and replayed
 # --------------------------------------------------------------------------- #
 def test_failed_send_is_queued_not_dropped() -> None:
     transport = FakeTransport(fail=True)  # Telegram unreachable (e.g. no VPN)
@@ -205,6 +224,7 @@ def test_failed_send_is_queued_not_dropped() -> None:
     _notifier(transport, outbox=outbox).notify([price_changed()], lambda _l: META)
     pending = outbox.pending()
     assert len(pending) == 1                       # not dropped — it is queued
+    assert pending[0].chat_id == "chat"
     assert "Price changed" in pending[0].text
 
 
@@ -218,25 +238,117 @@ def test_backlog_is_replayed_when_connection_returns() -> None:
     transport.fail = False                                # VPN comes back
     notifier.notify([], lambda _l: META)                  # any next pass flushes
     assert outbox.pending() == []                         # delivered and forgotten
-    assert any("Price changed" in t for t in transport.sent)
+    assert any("Price changed" in t for _c, t in transport.sent)
 
 
 def test_backlog_is_flushed_before_new_events() -> None:
     transport = FakeTransport()                    # online
     outbox = FakeOutbox()
-    outbox.remember("QUEUED-OLD")                  # a pre-existing backlog message
+    outbox.remember("chat", "QUEUED-OLD")          # a pre-existing backlog message
     _notifier(transport, outbox=outbox).notify([now_tracking()], lambda _l: META)
     assert outbox.pending() == []                  # backlog cleared
-    assert transport.sent[0] == "QUEUED-OLD"       # replayed FIRST (chronological)
-    assert "Now tracking" in transport.sent[1]     # the new event goes out AFTER
+    assert transport.sent[0][1] == "QUEUED-OLD"    # replayed FIRST (chronological)
+    assert "Now tracking" in transport.sent[1][1]  # the new event goes out AFTER
 
 
 def test_offline_retains_backlog_and_queues_new_events() -> None:
     transport = FakeTransport(fail=True)           # still offline
     outbox = FakeOutbox()
-    outbox.remember("QUEUED-OLD")
+    outbox.remember("chat", "QUEUED-OLD")
     _notifier(transport, outbox=outbox).notify([now_tracking()], lambda _l: META)
     texts = [m.text for m in outbox.pending()]
     assert "QUEUED-OLD" in texts                   # existing backlog kept
     assert any("Now tracking" in t for t in texts)  # new event queued too
     assert outbox.attempts == [1]                  # the backlog replay was tried once
+
+
+# --------------------------------------------------------------------------- #
+# multiple recipients + per-recipient queueing (no duplicate on partial delivery)
+# --------------------------------------------------------------------------- #
+def test_delivers_to_every_recipient() -> None:
+    transport = FakeTransport()
+    _notifier(transport, chat_ids=["a", "b"]).notify([price_changed()], lambda _l: META)
+    assert len(transport.texts_for("a")) == 1
+    assert len(transport.texts_for("b")) == 1
+
+
+def test_partial_failure_queues_only_the_unreached_recipient() -> None:
+    # b is unreachable this pass; a receives it. Only b must be queued.
+    transport = FakeTransport(fail_for=["b"])
+    outbox = FakeOutbox()
+    _notifier(transport, chat_ids=["a", "b"], outbox=outbox).notify(
+        [price_changed()], lambda _l: META)
+    assert len(transport.texts_for("a")) == 1          # a got it
+    pending = outbox.pending()
+    assert len(pending) == 1 and pending[0].chat_id == "b"  # only b queued
+
+
+def test_replay_does_not_duplicate_to_already_delivered_recipient() -> None:
+    # This is the bug being fixed: a partial failure must not re-send to the
+    # recipient that already received the message.
+    transport = FakeTransport(fail_for=["b"])
+    outbox = FakeOutbox()
+    notifier = _notifier(transport, chat_ids=["a", "b"], outbox=outbox)
+    notifier.notify([price_changed()], lambda _l: META)   # a delivered, b queued
+
+    transport.fail_for = set()                            # b reachable now
+    notifier.notify([], lambda _l: META)                  # flush the backlog
+    assert outbox.pending() == []
+    assert len(transport.texts_for("a")) == 1             # a still only ONCE
+    assert len(transport.texts_for("b")) == 1             # b finally gets it
+
+
+def test_permanently_rejected_recipient_is_not_queued() -> None:
+    transport = FakeTransport(permanent_for=["bad"])
+    outbox = FakeOutbox()
+    _notifier(transport, chat_ids=["good", "bad"], outbox=outbox).notify(
+        [price_changed()], lambda _l: META)
+    assert len(transport.texts_for("good")) == 1   # healthy recipient delivered
+    assert outbox.pending() == []                  # bad recipient NOT queued
+
+
+def test_as_chat_list_normalizes_single_and_many() -> None:
+    assert tg._as_chat_list("111") == ["111"]          # a lone id still works
+    assert tg._as_chat_list(["111", "222"]) == ["111", "222"]
+    assert tg._as_chat_list(None) == []
+    assert tg._as_chat_list(()) == []
+
+
+class _Resp:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_http_transport_posts_chat_id_and_text(monkeypatch) -> None:
+    bodies: list[str] = []
+
+    def fake_urlopen(req, timeout=None):
+        bodies.append(req.data.decode())
+        return _Resp()
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", fake_urlopen)
+    tg._http_transport("tok", timeout=1)("111", "hello")
+    assert len(bodies) == 1 and "chat_id=111" in bodies[0]
+
+
+def test_http_transport_raises_permanent_on_http_error(monkeypatch) -> None:
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError("url", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(tg.PermanentSendError):  # 4xx -> permanent, not retried
+        tg._http_transport("tok", timeout=1)("bad", "hi")
+
+
+def test_http_transport_propagates_transient_failure(monkeypatch) -> None:
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(urllib.error.URLError):  # transient -> notifier queues it
+        tg._http_transport("tok", timeout=1)("111", "hi")

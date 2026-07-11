@@ -49,11 +49,11 @@ def make_outbox(conn: sqlite3.Connection) -> Outbox:
 
     class _SqliteOutbox:
         def pending(self) -> list[PendingMessage]:
-            return [PendingMessage(id=r["id"], text=r["text"])
+            return [PendingMessage(id=r["id"], chat_id=r["chat_id"], text=r["text"])
                     for r in repo.pending_notifications(conn)]
 
-        def remember(self, text: str) -> None:
-            repo.enqueue_notification(conn, text, _now())
+        def remember(self, chat_id: str, text: str) -> None:
+            repo.enqueue_notification(conn, chat_id, text, _now())
 
         def forget(self, message_id: int) -> None:
             repo.delete_notification(conn, message_id)

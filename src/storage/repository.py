@@ -269,23 +269,26 @@ def count_active_links(conn: sqlite3.Connection, tracked_source_id: int) -> int:
 # --------------------------------------------------------------------------- #
 def enqueue_notification(
     conn: sqlite3.Connection,
+    chat_id: str,
     text: str,
     created_at: str,
     *,
     last_error: str | None = None,
 ) -> int:
-    """Append a rendered message to the outbox; return its id.
+    """Append a rendered message for one recipient to the outbox; return its id.
 
     ``created_at`` is ISO-8601 UTC. ``attempts`` starts at 1 because a message is
-    only ever enqueued *after* a delivery attempt has already failed.
+    only ever enqueued *after* a delivery attempt has already failed. One row per
+    recipient (``chat_id``) so a replay never re-sends to a chat that already got
+    the message.
     """
     cur = conn.execute(
         """
-        INSERT INTO pending_notifications (text, created_at, attempts,
+        INSERT INTO pending_notifications (chat_id, text, created_at, attempts,
                                            last_attempt_at, last_error)
-        VALUES (?, ?, 1, ?, ?)
+        VALUES (?, ?, ?, 1, ?, ?)
         """,
-        (text, created_at, created_at, last_error),
+        (chat_id, text, created_at, created_at, last_error),
     )
     conn.commit()
     return int(cur.lastrowid)

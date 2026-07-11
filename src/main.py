@@ -456,6 +456,61 @@ def cmd_notify_test(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# chat-ids (setup helper): list chats that recently messaged the bot, so you can
+# copy an id into TELEGRAM_CHAT_ID. A bot can only message chats it knows about,
+# so each recipient must send it a message (e.g. /start) at least once first.
+# --------------------------------------------------------------------------- #
+def cmd_chat_ids(args: argparse.Namespace) -> int:
+    import json
+    import urllib.request
+
+    from config import settings
+
+    if not settings.telegram_bot_token:
+        print("Set TELEGRAM_BOT_TOKEN in your .env first.")
+        return 1
+
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/getUpdates"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310
+            data = json.load(resp)
+    except Exception as exc:  # noqa: BLE001 - report and stop; never crash
+        print(f"getUpdates failed ({type(exc).__name__}). Check the token and that "
+              "your VPN/connection can reach Telegram, then retry.")
+        return 1
+
+    if not data.get("ok"):
+        print(f"Telegram returned an error: {data.get('description', data)}")
+        return 1
+
+    seen: dict[object, str] = {}
+    for upd in data.get("result", []):
+        msg = upd.get("message") or upd.get("edited_message") or {}
+        chat = msg.get("chat") or {}
+        cid = chat.get("id")
+        if cid is None:
+            continue
+        label = (chat.get("username")
+                 or " ".join(filter(None, (chat.get("first_name"),
+                                           chat.get("last_name"))))
+                 or chat.get("title") or chat.get("type") or "?")
+        seen[cid] = label
+
+    if not seen:
+        print("No recent chats. Ask each person to open the bot and send /start "
+              "(or any message), then re-run this within ~24h.")
+        return 0
+
+    print("Chats that recently messaged the bot:")
+    for cid, label in seen.items():
+        configured = " (configured)" if str(cid) in settings.telegram_chat_ids else ""
+        print(f"  {cid}\t{label}{configured}")
+    print("\nPut the ids you want to notify into TELEGRAM_CHAT_ID in .env, "
+          "comma-separated, e.g.  TELEGRAM_CHAT_ID=111111111,222222222")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # serve: start the local web dashboard (loopback only, §9a/§10)
 # --------------------------------------------------------------------------- #
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -510,6 +565,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     n = sub.add_parser("notify-test", help="[dev] send one sample Telegram message per event type")
     n.set_defaults(func=cmd_notify_test)
+
+    ci = sub.add_parser("chat-ids", help="list chats that messaged the bot (to fill TELEGRAM_CHAT_ID)")
+    ci.set_defaults(func=cmd_chat_ids)
 
     sv = sub.add_parser("serve", help="start the local web dashboard")
     sv.set_defaults(func=cmd_serve)
