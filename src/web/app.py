@@ -10,8 +10,12 @@ it with an in-memory DB and a fake adapter (no network). Endpoints are sync
 ``def`` so FastAPI runs them in a threadpool — the CIAN adapter uses *sync*
 Playwright, which must never run inside the asyncio event loop.
 
-The dashboard add is intentionally SILENT: it persists events but does not send
-Telegram. Notifications are driven only by ``run-once`` / the scheduler.
+The dashboard add's immediate fetch also NOTIFIES: the events it persists are
+handed to an injected ``notify`` seam (built from :mod:`src.notify.sink` at the
+composition root), so a newly-tracked listing pings Telegram just like a
+``run-once`` pass — respecting ``NOTIFY_ON_NEW`` and, with no connectivity,
+queueing to the outbox for later. The web layer stays thin: it does not format
+or send anything itself, only calls the injected seam.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 ConnFactory = Callable[[], ContextManager]
 AdapterFactory = Callable[[str], ContextManager]  # source -> ctx yielding adapter|None
+NotifySink = Callable[[object, list], None]        # (conn, events) -> None
 
 
 class AddBody(BaseModel):
@@ -41,11 +46,16 @@ class AddBody(BaseModel):
     note: str | None = None
 
 
+def _no_notify(conn, events) -> None:
+    """Default notify seam: do nothing (used by offline tests)."""
+
+
 def create_app(
     *,
     get_conn: ConnFactory,
     build_adapter: AdapterFactory,
     settings,
+    notify: NotifySink = _no_notify,
 ) -> FastAPI:
     app = FastAPI(title="Realty Tracker", docs_url=None, redoc_url=None)
 
@@ -93,6 +103,14 @@ def create_app(
                         {source: adapter}, conn, settings, src_row,
                         now=service._now_iso(),
                     )
+            # Push notifications for what the immediate fetch found, while the
+            # connection is still open (the seam's outbox/get_meta read it). The
+            # source is already persisted, so a notification problem must never
+            # fail the add — guard defensively even though the seam swallows.
+            try:
+                notify(conn, events)
+            except Exception:  # noqa: BLE001 - delivery must not break the add
+                logger.exception("notify seam raised during add; ignoring")
             fetched = sum(1 for e in events if e.type == tracker.EventType.NOW_TRACKING)
         if adapter is None:
             message = (f"Added to the watchlist. {source} is tracked via "
@@ -134,6 +152,7 @@ def _tracked_row(conn, tracked_id: int):
 def build_production_app():
     """Wire the app to the real DB and the live CIAN adapter (loopback use)."""
     from config import settings
+    from src.notify import sink
     from src.storage import db
 
     @contextmanager
@@ -156,4 +175,8 @@ def build_production_app():
             # and Avito is tracked via `grab` / `ingest`.
             yield None
 
-    return create_app(get_conn=get_conn, build_adapter=build_adapter, settings=settings)
+    def notify(conn, events) -> None:
+        sink.notify_events(conn, events, settings)
+
+    return create_app(get_conn=get_conn, build_adapter=build_adapter,
+                       settings=settings, notify=notify)

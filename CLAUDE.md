@@ -255,8 +255,12 @@ Layout — three stacked regions on one page:
      On submit, the backend detects the source from the URL host (cian.ru →
      `cian`, avito.ru → `avito`), inserts into `tracked_sources`, and triggers
      **one immediate fetch** for that source so the user sees data at once
-     instead of waiting for the next scheduled pass. Reject unknown hosts with a
-     clear message.
+     instead of waiting for the next scheduled pass. The events that fetch
+     produces are handed to the notifier (via an injected seam built from
+     `src.notify.sink`), so a newly-tracked listing pings Telegram just like a
+     `run-once` pass — respecting `NOTIFY_ON_NEW`, and queueing to the outbox if
+     offline. The web layer never formats or sends anything itself; it only
+     calls the seam. Reject unknown hosts with a clear message.
    - A table of all tracked objects, one row each, columns:
      source badge · object summary (rooms · area · floor · note) · current price
      · **₽/m²** · **Δ total** (% from first observed price) · **days since last
@@ -284,7 +288,8 @@ API shape (keep it this simple):
 - `GET /api/listings/{id}/history?range=all|90d|30d` — price observations for the
   chart.
 - `GET /api/summary` — the metric-strip numbers.
-- `POST /api/tracked` — body `{url, note}`; detect source, insert, fetch once.
+- `POST /api/tracked` — body `{url, note}`; detect source, insert, fetch once,
+  notify (via the injected seam) on what the fetch found.
 - `DELETE /api/tracked/{id}` — deactivate (set `active=0`); never hard-delete
   history.
 

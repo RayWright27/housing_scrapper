@@ -194,8 +194,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
 def cmd_run_once(args: argparse.Namespace) -> int:
     from config import settings
     from src.adapters.cian import CianAdapter
-    from src.notify.telegram import ListingMeta, TelegramNotifier
-    from src.storage import repository as repo
+    from src.notify import sink
     from src.tracker import run_once
 
     conn = _open_db()
@@ -209,19 +208,8 @@ def cmd_run_once(args: argparse.Namespace) -> int:
 
         # Deliver notifications AFTER persistence, while the DB is still open so
         # the notifier's injected get_meta can read listing details (§9b). The
-        # notifier is built only here, at the CLI seam — never inside tracker.py.
-        def get_meta(listing_id: int) -> ListingMeta | None:
-            row = repo.get_listing(conn, listing_id)
-            if row is None:
-                return None
-            return ListingMeta(
-                rooms=row["rooms"], area_total=row["area_total"],
-                title=row["title"], address=row["address"],
-            )
-
-        TelegramNotifier.from_settings(
-            settings, outbox=_make_outbox(conn)
-        ).notify(events, get_meta)
+        # notifier is built only at this seam — never inside tracker.py.
+        sink.notify_events(conn, events, settings)
     finally:
         conn.close()
 
@@ -256,53 +244,6 @@ def _ensure_tracked_source(conn, source: str, url: str, kind: str, note: str | N
     tracked_id = repo.add_tracked_source(conn, source, url, kind, note)
     return next(r for r in repo.get_tracked(conn, active_only=False)
                if r["id"] == tracked_id)
-
-
-def _meta_lookup(conn):
-    """A get_meta(listing_id) closure for the notifier, over an open connection."""
-    from src.notify.telegram import ListingMeta
-    from src.storage import repository as repo
-
-    def get_meta(listing_id: int):
-        row = repo.get_listing(conn, listing_id)
-        if row is None:
-            return None
-        return ListingMeta(rooms=row["rooms"], area_total=row["area_total"],
-                           title=row["title"], address=row["address"])
-
-    return get_meta
-
-
-def _make_outbox(conn):
-    """A DB-backed Outbox for the notifier, over an open connection.
-
-    Persists messages that fail to send and replays them once Telegram is
-    reachable again. Built here at the CLI seam so telegram.py stays DB-free
-    (§9b), exactly like ``_meta_lookup``.
-    """
-    from datetime import datetime, timezone
-
-    from src.notify.telegram import PendingMessage
-    from src.storage import repository as repo
-
-    def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
-
-    class _SqliteOutbox:
-        def pending(self):
-            return [PendingMessage(id=r["id"], text=r["text"])
-                    for r in repo.pending_notifications(conn)]
-
-        def remember(self, text: str) -> None:
-            repo.enqueue_notification(conn, text, _now())
-
-        def forget(self, message_id: int) -> None:
-            repo.delete_notification(conn, message_id)
-
-        def attempted(self, message_id: int, error: str) -> None:
-            repo.mark_notification_attempt(conn, message_id, _now(), error)
-
-    return _SqliteOutbox()
 
 
 # --------------------------------------------------------------------------- #
@@ -365,7 +306,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     from config import settings
     from src import tracker
-    from src.notify.telegram import TelegramNotifier
+    from src.notify import sink
 
     mod = _parse_module(args.source)
     html = _recover_view_source(Path(args.file).read_text(encoding="utf-8", errors="replace"))
@@ -384,9 +325,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     try:
         src_row = _ensure_tracked_source(conn, args.source, args.url, kind, args.note)
         events = tracker.ingest_raws(conn, src_row, raws)
-        TelegramNotifier.from_settings(
-            settings, outbox=_make_outbox(conn)
-        ).notify(events, _meta_lookup(conn))
+        sink.notify_events(conn, events, settings)
     finally:
         conn.close()
 
@@ -407,7 +346,7 @@ def cmd_grab(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
     from src import tracker
-    from src.notify.telegram import TelegramNotifier
+    from src.notify import sink
     from src.web.service import detect_source
 
     conn = _open_db()
@@ -445,9 +384,7 @@ def cmd_grab(args: argparse.Namespace) -> int:
                 except Exception as exc:  # noqa: BLE001 - one bad tab must not abort
                     print(f"  · skipped a tab ({type(exc).__name__})")
             browser.close()  # detaches; does NOT close your Chrome
-        TelegramNotifier.from_settings(
-            settings, outbox=_make_outbox(conn)
-        ).notify(all_events, _meta_lookup(conn))
+        sink.notify_events(conn, all_events, settings)
     finally:
         conn.close()
 

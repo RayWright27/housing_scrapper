@@ -189,3 +189,48 @@ def test_post_unknown_host_is_400(conn) -> None:
     r = _client(conn).post("/api/tracked", json={"url": "https://example.com/x"})
     assert r.status_code == 400
     assert "cian.ru" in r.json()["detail"]
+
+
+def _client_with_notify(conn, recorder):
+    from fastapi.testclient import TestClient
+
+    from src.web.app import create_app
+
+    @contextmanager
+    def get_conn():
+        yield conn
+
+    @contextmanager
+    def build_adapter(source):
+        yield FakeCian() if source == "cian" else None
+
+    settings = SimpleNamespace(delist_after_misses=3)
+    return TestClient(create_app(get_conn=get_conn, build_adapter=build_adapter,
+                                 settings=settings, notify=recorder))
+
+
+def test_dashboard_add_notifies_via_injected_seam(conn) -> None:
+    # The add's immediate fetch must hand its events to the notify seam so a
+    # newly-tracked listing pings Telegram (or queues to the outbox offline).
+    seen: list = []
+
+    def recorder(_conn, events) -> None:
+        seen.extend(events)
+
+    client = _client_with_notify(conn, recorder)
+    r = client.post("/api/tracked", json={"url": "https://spb.cian.ru/sale/flat/777/"})
+    assert r.status_code == 200
+    types = {e.type.value for e in seen}
+    assert "now_tracking" in types  # the new listing was announced to the seam
+
+
+def test_dashboard_add_notify_failure_does_not_break_add(conn) -> None:
+    # A delivery problem in the seam must never fail the add itself: the source
+    # is already persisted, so the endpoint guards the notify call defensively.
+    def boom(_conn, _events) -> None:
+        raise RuntimeError("telegram exploded")
+
+    client = _client_with_notify(conn, boom)
+    r = client.post("/api/tracked", json={"url": "https://spb.cian.ru/sale/flat/777/"})
+    assert r.status_code == 200 and r.json()["fetched"] == 1  # add still succeeded
+    assert len(client.get("/api/listings").json()) == 1       # and was persisted
