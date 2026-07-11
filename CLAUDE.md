@@ -268,7 +268,11 @@ Layout — three stacked regions on one page:
    - A table of all tracked objects, one row each, columns:
      source badge · object summary (rooms · area · floor · note) · current price
      · **₽/m²** · **Δ total** (% from first observed price) · **days since last
-     price change** · remove (×). Delisted rows render dimmed but stay visible.
+     price change** · **last checked** (relative `last_seen_at` + a freshness
+     dot) · remove (×). Delisted rows render dimmed but stay visible. After a
+     `Refresh`, rows carry a transient badge — updated / unchanged / not checked
+     — computed client-side by diffing each row's price and `last_seen_at`
+     against the pre-refresh snapshot; the badges clear on the next reload.
 
 3. **Chart section** (configurable price history):
    - Listing selector: multi-select chips to overlay several objects on one chart.

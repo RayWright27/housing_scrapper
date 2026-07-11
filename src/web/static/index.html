@@ -37,6 +37,14 @@
   th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
   th { color:var(--muted); font-weight:600; font-size:12px; }
   tr.delisted { opacity:.45; }
+  tr.changed td { background:rgba(31,158,95,.10); }   /* row touched by the last refresh */
+  .fdot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
+  .fdot.fresh { background:var(--down); } .fdot.recent { background:#e0a020; } .fdot.stale { background:var(--dot-off); }
+  .rb { font-size:11px; padding:1px 7px; border-radius:6px; margin-left:6px; white-space:nowrap; }
+  .rb.ok { background:rgba(31,158,95,.16); color:var(--down); }
+  .rb.same { background:var(--line); color:var(--muted); }
+  .rb.no { color:var(--muted); border:1px dashed var(--line); }
+  .rb.wait { background:rgba(224,160,32,.16); color:#b9821a; }
   .badge { font-size:11px; padding:2px 6px; border-radius:6px; background:var(--line); color:var(--muted); }
   .up { color:var(--up); } .down { color:var(--down); } .num { text-align:right; font-variant-numeric:tabular-nums; }
   .x { color:var(--muted); cursor:pointer; border:none; background:none; font-size:16px; }
@@ -143,10 +151,13 @@ const I18N = {
     err_generic:m=>"Ошибка: "+m, load_error:m=>"Ошибка загрузки: "+m,
     date_locale:"ru-RU", theme_to_dark:"🌙", theme_to_light:"☀️",
     btn_refresh:"🔄 Обновить", refreshing:"Обновляем CIAN…",
-    refresh_result:o=>`CIAN: загружено ${o.fetched}, изменений цены ${o.changed}.`
-      + (o.avito_launched ? " Avito: grab открыт в отдельной консоли — дождитесь загрузки вкладок и нажмите там Enter." : ""),
+    refresh_summary:(u,s,k,ch)=>`Обновлено ${u} · без изменений ${s}`+(ch?` · проверяется ${ch}`:``)+` · не проверено ${k}.`,
+    refresh_avito:" Avito: grab открыт в отдельной консоли — дождитесь загрузки вкладок и нажмите там Enter.",
     refresh_err:m=>"Не удалось обновить: "+m,
     lbl_selectall:"Выбрать всё", lbl_clearall:"Снять всё", btn_autoscale:"⤢ Сброс зума",
+    th_checked:"Проверено", just_now:"только что", min_ago:"мин назад", h_ago:"ч назад", d_ago:"дн назад",
+    st_updated:"обновлено", st_same:"без изменений", st_unchecked:"не проверено",
+    st_checking:"проверяется…", checked_never:"—",
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -173,10 +184,13 @@ const I18N = {
     err_generic:m=>"Error: "+m, load_error:m=>"Load error: "+m,
     date_locale:"en-GB", theme_to_dark:"🌙", theme_to_light:"☀️",
     btn_refresh:"🔄 Refresh", refreshing:"Refreshing CIAN…",
-    refresh_result:o=>`CIAN: fetched ${o.fetched}, price changes ${o.changed}.`
-      + (o.avito_launched ? " Avito: grab opened in a separate console — let the tabs load and press Enter there." : ""),
+    refresh_summary:(u,s,k,ch)=>`Updated ${u} · unchanged ${s}`+(ch?` · checking ${ch}`:``)+` · not checked ${k}.`,
+    refresh_avito:" Avito: grab opened in a separate console — let the tabs load and press Enter there.",
     refresh_err:m=>"Refresh failed: "+m,
     lbl_selectall:"Select all", lbl_clearall:"Clear all", btn_autoscale:"⤢ Reset zoom",
+    th_checked:"Checked", just_now:"just now", min_ago:"min ago", h_ago:"h ago", d_ago:"d ago",
+    st_updated:"updated", st_same:"unchanged", st_unchecked:"not checked",
+    st_checking:"checking…", checked_never:"—",
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -186,6 +200,23 @@ const rub = n => (n==null ? "—" : new Intl.NumberFormat("ru-RU").format(Math.r
 const pct = n => (n==null ? "—" : (n>0?"+":"") + n.toFixed(1) + "%");
 const PALETTE = ["#3b6ef5","#1f9e5f","#d64545","#e0a020","#9b51e0","#0aa3b5","#e0713b","#5a6485"];
 let LISTINGS = [], SUMMARY = {total:0,active:0,delisted:0,changes_7d:0}, SELECTED = new Set(), HIST = {}, chart = null;
+// Per-refresh outcome per listing id: {k:'changed'|'same'|'unchecked'}. Set by
+// doRefresh, shown as row badges until the next refresh/add/remove.
+let REFRESH_STATUS = new Map();
+
+function relTime(iso){
+  if(!iso) return t("checked_never");
+  const s=(Date.now()-Date.parse(iso))/1000;
+  if(s<60) return t("just_now");
+  if(s<3600) return Math.floor(s/60)+" "+t("min_ago");
+  if(s<86400) return Math.floor(s/3600)+" "+t("h_ago");
+  return Math.floor(s/86400)+" "+t("d_ago");
+}
+function freshness(iso){
+  if(!iso) return "stale";
+  const s=(Date.now()-Date.parse(iso))/1000;
+  return s<1800 ? "fresh" : (s<86400 ? "recent" : "stale");
+}
 
 async function jget(u){ const r=await fetch(u); if(!r.ok) throw new Error((await r.json()).detail||r.statusText); return r.json(); }
 
@@ -232,6 +263,7 @@ async function loadAll(){
   const [summary, listings] = await Promise.all([jget("/api/summary"), jget("/api/listings")]);
   SUMMARY = summary; LISTINGS = listings;
   SELECTED = new Set([...SELECTED].filter(id => LISTINGS.some(l=>l.id===id)));
+  REFRESH_STATUS = new Map();   // stale after any reload; doRefresh re-sets its own
   renderAll();
 }
 function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); }
@@ -255,19 +287,27 @@ function renderTable(){
   if(!LISTINGS.length){ document.getElementById("tableWrap").innerHTML = `<div class="empty">${t("empty_table")}</div>`; return; }
   const rows = LISTINGS.map(l=>{
     const d=l.delta_total_pct, dCls = d==null?"":(d<0?"down":(d>0?"up":""));
-    return `<tr class="${l.status==='delisted'?'delisted':''}">
+    const st=REFRESH_STATUS.get(l.id);
+    const badge = !st ? "" :
+      st.k==='changed'   ? `<span class="rb ok">${t("st_updated")}</span>` :
+      st.k==='checking'  ? `<span class="rb wait">${t("st_checking")}</span>` :
+      st.k==='unchecked' ? `<span class="rb no">${t("st_unchecked")}</span>` :
+                           `<span class="rb same">${t("st_same")}</span>`;
+    return `<tr class="${l.status==='delisted'?'delisted ':''}${st&&st.k==='changed'?'changed':''}">
       <td><span class="badge">${l.source}</span></td>
       <td><a href="${l.url}" target="_blank" rel="noopener">${label(l)}</a></td>
       <td class="num">${rub(l.current_price)}</td>
       <td class="num">${l.price_per_m2==null?'—':rub(l.price_per_m2)+"/"+t("unit_m2")}</td>
       <td class="num ${dCls}">${pct(d)}</td>
       <td class="num">${l.days_since_change==null?'—':l.days_since_change+"d"}</td>
+      <td><span class="fdot ${freshness(l.last_seen_at)}"></span>${relTime(l.last_seen_at)}${badge}</td>
       <td class="num">${l.tracked_source_id!=null
         ? `<button class="x" title="×" data-src="${l.tracked_source_id}" data-kind="${l.tracked_source_kind}" data-note="${(l.note||'').replace(/"/g,'&quot;')}">×</button>` : ''}</td>
     </tr>`;}).join("");
   document.getElementById("tableWrap").innerHTML =
     `<table><thead><tr><th>${t("th_source")}</th><th>${t("th_object")}</th><th class="num">${t("th_price")}</th>
-     <th class="num">${t("th_ppm2")}</th><th class="num">${t("th_delta")}</th><th class="num">${t("th_since")}</th><th></th></tr></thead>
+     <th class="num">${t("th_ppm2")}</th><th class="num">${t("th_delta")}</th><th class="num">${t("th_since")}</th>
+     <th>${t("th_checked")}</th><th></th></tr></thead>
      <tbody>${rows}</tbody></table>`;
   document.querySelectorAll(".x").forEach(b=>b.onclick=()=>removeTracked(b.dataset, b));
 }
@@ -402,15 +442,62 @@ async function removeTracked(d, btn){
   catch(e){ alert(t("err_remove")); btn.disabled=false; }
 }
 
+const sleep = ms => new Promise(r=>setTimeout(r, ms));
+
+// Classify every row against the pre-refresh snapshot. `avitoPending` keeps
+// not-yet-checked Avito rows as 'checking' (the grab runs asynchronously in its
+// own console) instead of 'unchecked'. Returns the tally for the summary line.
+function classifyRefresh(before, avitoPending){
+  REFRESH_STATUS=new Map(); let upd=0, same=0, unchk=0, checking=0;
+  for(const l of LISTINGS){
+    const b=before.get(l.id);
+    const checked = !b || (l.last_seen_at && l.last_seen_at!==b.seen);  // last_seen advanced
+    if(checked){
+      if(!b || l.current_price!==b.price){ REFRESH_STATUS.set(l.id,{k:'changed'}); upd++; }
+      else { REFRESH_STATUS.set(l.id,{k:'same'}); same++; }
+    } else if(avitoPending && l.source==='avito'){
+      REFRESH_STATUS.set(l.id,{k:'checking'}); checking++;
+    } else { REFRESH_STATUS.set(l.id,{k:'unchecked'}); unchk++; }
+  }
+  return {upd, same, unchk, checking};
+}
+function refreshSummary(c){
+  let s=t("refresh_summary")(c.upd,c.same,c.unchk,c.checking);
+  if(c.checking) s+=t("refresh_avito");
+  return s;
+}
+
+// After a refresh that launched the Avito grab, poll the LOCAL db (read-only, no
+// scraping) so rows flip from 'checking' to updated/unchanged as the grab records
+// prices in its console. Bounded; leftover 'checking' rows finalize as unchecked.
+async function pollGrab(before){
+  const msg=document.getElementById("addMsg");
+  for(let i=0;i<18;i++){
+    await sleep(10000);
+    if(REFRESH_STATUS.size===0) return;          // user reloaded/added/removed — stop
+    try{ LISTINGS=await jget("/api/listings"); }catch(e){ continue; }
+    const c=classifyRefresh(before, true);
+    renderTable(); msg.textContent=refreshSummary(c);
+    if(!c.checking) return;                       // every Avito row resolved
+  }
+  try{ LISTINGS=await jget("/api/listings"); }catch(e){}
+  const c=classifyRefresh(before, false);         // timeout: mark leftovers unchecked
+  renderTable(); msg.textContent=refreshSummary(c);
+}
+
 async function doRefresh(){
   const btn=document.getElementById("refreshBtn"), msg=document.getElementById("addMsg");
   btn.disabled=true; btn.textContent=t("refreshing"); msg.textContent=t("refreshing");
+  // Snapshot before the pass so we can classify each row afterwards.
+  const before=new Map(LISTINGS.map(l=>[l.id,{price:l.current_price, seen:l.last_seen_at}]));
   try{
     const r=await fetch("/api/refresh",{method:"POST"});
     const body=await r.json();
     if(!r.ok) throw new Error(body.detail||r.statusText);
-    msg.textContent=t("refresh_result")(body);
-    await loadAll();
+    await loadAll();                               // pull fresh listings (clears status)
+    const c=classifyRefresh(before, body.avito_launched);
+    renderTable(); msg.textContent=refreshSummary(c);
+    if(body.avito_launched && c.checking) pollGrab(before);  // auto-update as grab runs
   }catch(e){ msg.textContent=t("refresh_err")(e.message); }
   finally{ btn.disabled=false; btn.textContent=t("btn_refresh"); }
 }
