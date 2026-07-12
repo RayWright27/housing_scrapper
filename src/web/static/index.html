@@ -52,6 +52,12 @@
   .rb.wait { background:rgba(224,160,32,.16); color:#b9821a; }
   .badge { font-size:11px; padding:2px 6px; border-radius:6px; background:var(--line); color:var(--muted); }
   .up { color:var(--up); } .down { color:var(--down); } .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .tgt { cursor:pointer; white-space:nowrap; }
+  .tgt:hover { text-decoration:underline dotted; }
+  .tbadge { font-size:11px; margin-left:5px; }
+  .tset { border:1px dashed var(--line); background:none; color:var(--muted); cursor:pointer;
+          border-radius:6px; padding:2px 6px; font-size:13px; }
+  .tset:hover { border-color:var(--accent); color:var(--accent); }
   .x { color:var(--muted); cursor:pointer; border:none; background:none; font-size:16px; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
   .chip { font-size:12px; padding:4px 8px; border-radius:20px; border:1px solid var(--line);
@@ -140,6 +146,8 @@ const I18N = {
     msg_enter_url:"Введите ссылку.", msg_adding:"Добавляем и загружаем — это может занять несколько секунд…",
     th_source:"Источник", th_object:"Объект", th_price:"Цена", th_ppm2:"₽/м²",
     th_delta:"Δ всего", th_since:"С посл. изм.", empty_table:"Пока нет объектов. Добавьте ссылку CIAN выше.",
+    th_target:"Цель", target_set:"Задать целевую цену", target_edit:"Изменить целевую цену",
+    target_prompt:"Целевая цена в рублях (пусто — убрать цель):",
     h_history:"История цен", lbl_range:"Период", opt_all:"Всё", opt_90:"90д", opt_30:"30д",
     lbl_yaxis:"Ось Y", opt_rub:"₽ (абсолют.)", opt_m2:"₽/м²", opt_pct:"% от старта",
     hint_select:"Выберите объекты выше для графика.", hint_greyed:"Часть рядов скрыта (нет площади для ₽/м²).",
@@ -177,6 +185,8 @@ const I18N = {
     msg_enter_url:"Enter a URL.", msg_adding:"Adding and fetching once — this can take a few seconds…",
     th_source:"Source", th_object:"Object", th_price:"Price", th_ppm2:"₽/m²",
     th_delta:"Δ total", th_since:"Since change", empty_table:"No objects tracked yet. Add a CIAN URL above to begin.",
+    th_target:"Target", target_set:"Set a target price", target_edit:"Edit target price",
+    target_prompt:"Target price in rubles (empty to remove the target):",
     h_history:"Price history", lbl_range:"Range", opt_all:"All", opt_90:"90d", opt_30:"30d",
     lbl_yaxis:"Y-axis", opt_rub:"₽ (absolute)", opt_m2:"₽/m²", opt_pct:"% from start",
     hint_select:"Select objects above to plot.", hint_greyed:"Some series hidden (no area for ₽/m²).",
@@ -344,6 +354,7 @@ function renderTable(){
       <td><a href="${l.url}" target="_blank" rel="noopener">${label(l)}</a></td>
       <td class="num">${rub(l.current_price)}</td>
       <td class="num">${l.price_per_m2==null?'—':rub(l.price_per_m2)+"/"+t("unit_m2")}</td>
+      <td class="num">${targetCell(l)}</td>
       <td class="num ${dCls}">${pct(d)}</td>
       <td class="num">${l.days_since_change==null?'—':l.days_since_change+"d"}</td>
       <td><span class="fdot ${freshness(l.last_seen_at)}"></span>${relTime(l.last_seen_at)}${badge}</td>
@@ -352,10 +363,41 @@ function renderTable(){
     </tr>`;}).join("");
   document.getElementById("tableWrap").innerHTML =
     `<table><thead><tr><th>${t("th_source")}</th><th>${t("th_object")}</th><th class="num">${t("th_price")}</th>
-     <th class="num">${t("th_ppm2")}</th><th class="num">${t("th_delta")}</th><th class="num">${t("th_since")}</th>
+     <th class="num">${t("th_ppm2")}</th><th class="num">${t("th_target")}</th><th class="num">${t("th_delta")}</th><th class="num">${t("th_since")}</th>
      <th>${t("th_checked")}</th><th></th></tr></thead>
      <tbody>${rows}</tbody></table>`;
   document.querySelectorAll(".x").forEach(b=>b.onclick=()=>removeTracked(b.dataset, b));
+  document.querySelectorAll("[data-tgt]").forEach(el=>el.onclick=()=>
+    setTarget(+el.dataset.tgt, el.dataset.cur? +el.dataset.cur : null));
+}
+
+// The target cell: shows the set target + how far the current price is above it
+// (green when at/below), or a 🎯 button to set one. Editing uses a simple prompt.
+function targetCell(l){
+  if(l.target_price!=null){
+    const d=l.target_delta_pct;
+    const cls = d==null ? "" : (d<=0 ? "down" : "up");
+    const badge = d==null ? "" : `<span class="tbadge ${cls}">${d<=0?"✓ ":""}${pct(d)}</span>`;
+    return `<span class="tgt" data-tgt="${l.id}" data-cur="${l.target_price}" title="${t("target_edit")}">${rub(l.target_price)}${badge}</span>`;
+  }
+  return `<button class="tset" data-tgt="${l.id}" title="${t("target_set")}">🎯</button>`;
+}
+
+async function setTarget(id, current){
+  const raw = prompt(t("target_prompt"), current!=null ? String(current) : "");
+  if(raw===null) return;                         // cancelled
+  const digits = raw.replace(/[^\d]/g,"");        // tolerate spaces / ₽ / separators
+  try{
+    if(digits===""){
+      const r=await fetch(`/api/listings/${id}/target`,{method:"DELETE"});
+      if(!r.ok) throw new Error();
+    } else {
+      const r=await fetch(`/api/listings/${id}/target`,{ method:"PUT",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify({target_price:parseInt(digits,10)})});
+      if(!r.ok) throw new Error();
+    }
+    await loadAll();
+  }catch(e){ alert(t("err_generic")(e.message||"")); }
 }
 
 function renderChips(){

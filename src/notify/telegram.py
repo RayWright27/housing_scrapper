@@ -84,6 +84,10 @@ class ListingMeta:
     area_total: float | None = None
     title: str | None = None
     address: str | None = None
+    # Optional user-set price target (rubles). Purely message CONTEXT: the target
+    # does not gate whether a message is sent — a price change already does. When
+    # present, the message shows how the current price sits against the target.
+    target_price: int | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -134,16 +138,34 @@ def _price_per_m2(price: int, meta: ListingMeta | None) -> str | None:
     return _rub(round(price / meta.area_total)) + "/м²"
 
 
+def _target_line(current: int | None, meta: ListingMeta | None) -> str | None:
+    """A '🎯 target …' / '✅ target reached' context line, or ``None`` if no target.
+
+    Pure display: shows the current price's distance to the user's target. The
+    target never decides whether a message is sent (a price change does)."""
+    if meta is None or meta.target_price is None or current is None:
+        return None
+    target = meta.target_price
+    gap = current - target
+    if gap > 0:
+        return f"\U0001f3af Цель: {_rub(target)} (на {_group(gap)}{NB}₽ выше)"
+    if gap < 0:
+        return f"✅ Ниже цели {_rub(target)} (на {_group(-gap)}{NB}₽)"
+    return f"✅ Цель {_rub(target)} достигнута"
+
+
 def format_price_changed(event: Event, meta: ListingMeta | None) -> str:
     down = (event.delta or 0) < 0
     arrow = "\U0001f4c9 ↓" if down else "\U0001f4c8 ↑"
     delta = f"{event.delta:+,}".replace(",", NB) + NB + "₽"  # keep explicit sign
     pct = f"{event.percent:+.1f}%"
+    target = _target_line(event.new_price, meta)
     return (
         f"{arrow} Цена изменилась ({pct}) · {_src(event)}\n"
         f"{_label(event, meta)}\n"
         f"{_rub(event.old_price)} → {_rub(event.new_price)} ({delta})\n"
-        f"{_link(event)}"
+        + (f"{target}\n" if target else "")
+        + f"{_link(event)}"
     )
 
 
@@ -161,11 +183,13 @@ def format_now_tracking(event: Event, meta: ListingMeta | None) -> str:
     price_line = _rub(event.price)
     if per_m2 is not None:
         price_line += f" (≈ {per_m2})"
+    target = _target_line(event.price, meta)
     return (
         f"\U0001f195 Отслеживаем · {_src(event)}\n"
         f"{_label(event, meta)}\n"
         f"{price_line}\n"
-        f"{_link(event)}"
+        + (f"{target}\n" if target else "")
+        + f"{_link(event)}"
     )
 
 
