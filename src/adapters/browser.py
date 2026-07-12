@@ -23,17 +23,23 @@ def _maybe_block(route: Any) -> None:
         route.continue_()
 
 
-def launch_context(settings: Any, user_agent: str) -> tuple[Any, Any, Any]:
+def launch_context(
+    settings: Any, user_agent: str, *, headless_override: bool | None = None
+) -> tuple[Any, Any, Any]:
     """Start Playwright and return ``(pw, browser, context)``.
 
     ``browser`` is ``None`` when a persistent user-data dir is configured (the
     context owns the browser in that mode). ru-RU locale, a normal viewport, and
     a stable UA are always set; media is blocked when ``block_media`` is on.
+
+    ``headless_override`` lets a non-hostile source (CIAN) run headless even when
+    ``BROWSER_HEADLESS=0`` is set for the headful Avito grab/warmup.
     """
     from playwright.sync_api import sync_playwright
 
+    headless = settings.browser_headless if headless_override is None else headless_override
     pw = sync_playwright().start()
-    launch_kwargs: dict[str, Any] = {"headless": settings.browser_headless}
+    launch_kwargs: dict[str, Any] = {"headless": headless}
     if settings.browser_channel:
         launch_kwargs["channel"] = settings.browser_channel
     if settings.proxy_url:
@@ -53,7 +59,7 @@ def launch_context(settings: Any, user_agent: str) -> tuple[Any, Any, Any]:
         )
         browser = None
         logger.info("launched persistent browser context (headless=%s, channel=%s)",
-                    settings.browser_headless, settings.browser_channel or "chromium")
+                    headless, settings.browser_channel or "chromium")
     else:
         browser = pw.chromium.launch(**launch_kwargs)
         context = browser.new_context(**context_kwargs)

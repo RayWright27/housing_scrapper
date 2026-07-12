@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.adapters.base import RawListing
+from src.adapters.base import RawListing, SiteBlocked
 from src.storage import repository as repo
 from src.storage.db import init_db
 from src.tracker import EventType, ingest_raws, run_once
@@ -25,13 +25,18 @@ class FakeAdapter:
         self.listing: dict[str, RawListing | None] = {}
         self.search: dict[str, list[RawListing]] = {}
         self.raise_on: set[str] = set()
+        self.block_on: set[str] = set()   # raise SiteBlocked (captcha/timeout)
 
     def fetch_listing(self, url: str) -> RawListing | None:
+        if url in self.block_on:
+            raise SiteBlocked("simulated block")
         if url in self.raise_on:
             raise RuntimeError("simulated fetch blow-up")
         return self.listing.get(url)
 
     def fetch_search(self, url: str) -> list[RawListing]:
+        if url in self.block_on:
+            raise SiteBlocked("simulated block")
         if url in self.raise_on:
             raise RuntimeError("simulated fetch blow-up")
         return list(self.search.get(url, []))
@@ -273,3 +278,22 @@ def test_listing_source_still_delists_after_n_misses(conn) -> None:
     delisted = [e for e in evs if e.type == EventType.DELISTED]
     assert len(delisted) == 1 and delisted[0].external_id == "9"
     assert repo.get_listing(conn, lid(conn, "9"))["is_active"] == 0
+
+
+def test_soft_block_is_not_a_miss_and_never_delists(conn) -> None:
+    # A captcha/anti-bot/timeout raises SiteBlocked → "couldn't check", NOT a
+    # removal: it must never count toward delisting (#3), unlike a real 404.
+    url = "https://cian.ru/sale/flat/1/"
+    repo.add_tracked_source(conn, "cian", url, "listing")
+    fake = FakeAdapter()
+    clock = Clock()
+    fake.listing[url] = raw("1", 5_000_000, url)
+    run_once({"cian": fake}, conn, settings(1), now_fn=clock)  # first-seen, linked
+
+    fake.block_on.add(url)  # every later run is blocked
+    delisted = []
+    for _ in range(5):      # far past the delist threshold of 1
+        evs = run_once({"cian": fake}, conn, settings(1), now_fn=clock)
+        delisted += [e for e in evs if e.type == EventType.DELISTED]
+    assert delisted == []   # a block never delists
+    assert repo.get_listing(conn, lid(conn, "1"))["is_active"] == 1  # still active

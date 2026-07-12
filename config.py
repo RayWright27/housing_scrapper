@@ -62,6 +62,16 @@ class Settings:
     # Change detection (§8.7): mark a listing delisted only after it has been
     # missing this many consecutive runs — guards against a transient block.
     delist_after_misses: int
+    # Scheduler (§16.7): the `run` loop fetches CIAN every this many hours.
+    # (Same value the dashboard shows; Avito stays manual — it needs a human.)
+    # Backups: how many timestamped DB snapshots to keep in data/backups.
+    db_backup_keep: int
+    # CIAN is not hostile, so its automated fetches run headless regardless of
+    # BROWSER_HEADLESS (which stays available for the headful Avito grab/warmup).
+    cian_headless: bool
+    # Avito grab: seconds to let the opened tabs load before the helper auto-
+    # continues and reads them (you can still press Enter to grab sooner).
+    avito_grab_load_time: int
     # Notifications: also push a Telegram message on a newly-tracked listing
     # (NOW_TRACKING), not only on price changes/delistings.
     notify_on_new: bool
@@ -118,6 +128,9 @@ def load_settings() -> Settings:
         block_media=_get_bool("BLOCK_MEDIA", True),
         max_search_pages=_get_int("MAX_SEARCH_PAGES", 1),
         delist_after_misses=_get_int("DELIST_AFTER_MISSES", 3),
+        db_backup_keep=_get_int("DB_BACKUP_KEEP", 10),
+        cian_headless=_get_bool("CIAN_HEADLESS", True),
+        avito_grab_load_time=_get_int("AVITO_GRAB_LOAD_TIME", 40),
         notify_on_new=_get_bool("NOTIFY_ON_NEW", True),
         browser_headless=_get_bool("BROWSER_HEADLESS", True),
         browser_channel=_get_optional("BROWSER_CHANNEL"),

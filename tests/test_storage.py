@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from src.storage import repository as repo
-from src.storage.db import init_db
+from src.storage.db import backup_db, init_db
 
 NOW = "2026-06-30T12:00:00Z"
 LATER = "2026-06-30T18:00:00Z"
@@ -18,6 +18,28 @@ def conn() -> sqlite3.Connection:
     c = init_db(":memory:")
     yield c
     c.close()
+
+
+def test_backup_db_snapshots_and_prunes(tmp_path) -> None:
+    db_file = tmp_path / "tracker.db"
+    c = init_db(str(db_file))
+    repo.add_tracked_source(c, "cian", "u", "listing")
+    c.close()
+
+    # Make several backups keeping only the last 2; older ones are pruned away.
+    made = [backup_db(str(db_file), keep=2) for _ in range(3)]
+    assert all(p is not None for p in made)     # each snapshot was created
+    kept = sorted((tmp_path / "backups").glob("tracker-*.db"))
+    assert len(kept) == 2                       # pruned to `keep`
+    assert not made[0].exists() and made[-1].exists()  # oldest gone, newest kept
+    copy = sqlite3.connect(kept[-1])
+    assert copy.execute("SELECT COUNT(*) FROM tracked_sources").fetchone()[0] == 1
+    copy.close()
+
+
+def test_backup_db_noop_for_memory_or_missing(tmp_path) -> None:
+    assert backup_db(":memory:") is None
+    assert backup_db(str(tmp_path / "nope.db")) is None
 
 
 def test_bootstrap_creates_tables_and_index(conn: sqlite3.Connection) -> None:

@@ -26,7 +26,7 @@ import re
 import time
 from typing import Any, Literal
 
-from src.adapters.base import RawListing
+from src.adapters.base import RawListing, SiteBlocked
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +413,12 @@ class CianAdapter:
             return
         from src.adapters.browser import launch_context
 
-        self._pw, self._browser, self._context = launch_context(self.settings, USER_AGENT)
+        # CIAN is not hostile — run headless (no window) regardless of the global
+        # BROWSER_HEADLESS, which stays headful for the Avito grab/warmup (§7).
+        headless = getattr(self.settings, "cian_headless", True)
+        self._pw, self._browser, self._context = launch_context(
+            self.settings, USER_AGENT, headless_override=headless
+        )
 
     def close(self) -> None:
         from src.adapters.browser import close_context
@@ -457,11 +462,11 @@ class CianAdapter:
 
     def fetch_listing(self, url: str) -> RawListing | None:
         html, final_url = self.fetch_raw(url)
-        if html is None:
-            return None
+        if html is None:  # navigation timeout — could not check, not a removal
+            raise SiteBlocked(f"timeout fetching {url}")
         if classify_page(html, final_url) == "captcha":
-            logger.warning("CIAN blocked (captcha) while fetching %s", url)
-            return None
+            raise SiteBlocked(f"captcha while fetching {url}")
+        # A removed/404 listing returns None here — that IS a confirmed absence.
         return parse_listing(html, url)
 
     def fetch_search(self, url: str) -> list[RawListing]:
@@ -471,13 +476,12 @@ class CianAdapter:
             page_url = url if page_no == 1 else _with_page(url, page_no)
             html, final_url = self.fetch_raw(page_url)
             if html is None:
-                break
+                raise SiteBlocked(f"timeout fetching search {page_url}")
             if classify_page(html, final_url) == "captcha":
-                logger.warning("CIAN blocked (captcha) while fetching search %s", page_url)
-                break
+                raise SiteBlocked(f"captcha while fetching search {page_url}")
             batch = parse_search(html)
             if not batch:
-                break
+                break  # a genuinely empty page, not a block — stop paging
             results.extend(batch)
         return results
 

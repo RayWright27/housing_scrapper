@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Mapping
 
-from src.adapters.base import RawListing, SiteAdapter
+from src.adapters.base import RawListing, SiteAdapter, SiteBlocked
 from src.changes import detect_price_change
 from src.normalize import NormalizationError, Listing, normalize
 from src.storage import repository as repo
@@ -200,10 +200,19 @@ def process_source(
 
     try:
         raws = _fetch(adapter, src_row["kind"], src_row["url"])
+    except SiteBlocked as exc:
+        # Could not read the site this run (captcha / anti-bot / timeout). This is
+        # NOT a removal, so we must not count it as a miss — otherwise a few
+        # blocked runs would falsely delist a live listing (§8.7). Skip cleanly.
+        logger.warning("source %s (%s) blocked: %s — skipping without penalty",
+                       src_row["id"], source, exc)
+        return events
     except Exception:  # noqa: BLE001 - deliberately broad at the seam
+        # An unexpected fetch/parse error is likewise "couldn't check", not a
+        # confirmed absence: don't penalise it toward delisting either.
         logger.exception("fetch failed for tracked_source %s (%s); "
-                         "treating as a miss for this run", src_row["id"], source)
-        raws = []
+                         "skipping without penalty", src_row["id"], source)
+        return events
 
     seen_listing_ids: set[int] = set()
     for raw in raws:

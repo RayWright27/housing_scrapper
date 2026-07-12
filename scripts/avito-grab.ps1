@@ -35,8 +35,38 @@ Start-Process -FilePath $chrome -ArgumentList $chromeArgs
 
 Write-Host ""
 Write-Host "Let every tab finish loading (solve any challenge by hand if one appears)."
-Read-Host "Then press Enter here to read the tabs and record prices" | Out-Null
+
+# A visible countdown that returns early if Enter is pressed. Works whether the
+# console is interactive (attended) or not (unattended dashboard Refresh): if the
+# key API is unavailable it simply counts down the full time.
+function Wait-OrEnter([int]$seconds, [string]$label) {
+    $canRead = $true
+    for ($i = $seconds; $i -gt 0; $i--) {
+        Write-Host -NoNewline ("`r{0} {1,3} s ... (press Enter now)   " -f $label, $i)
+        for ($t = 0; $t -lt 10; $t++) {
+            if ($canRead) {
+                try {
+                    if ([Console]::KeyAvailable -and [Console]::ReadKey($true).Key -eq 'Enter') {
+                        Write-Host ""; return
+                    }
+                } catch { $canRead = $false }   # non-interactive: stop polling keys
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    Write-Host ""
+}
+
+# Auto-continue after AVITO_GRAB_LOAD_TIME seconds (default 40) so an unattended
+# Refresh finishes on its own; pressing Enter reads the tabs sooner.
+$wait = 40
+if ($env:AVITO_GRAB_LOAD_TIME -and ($env:AVITO_GRAB_LOAD_TIME -as [int])) {
+    $wait = [int]$env:AVITO_GRAB_LOAD_TIME
+}
+Wait-OrEnter $wait "Reading the tabs in"
 
 & $py -m src.main grab
+
+# Keep this window open so the grab result above stays visible (it auto-closes).
 Write-Host ""
-Write-Host "Done. You can close the Chrome window."
+Wait-OrEnter 30 "Closing this window in"

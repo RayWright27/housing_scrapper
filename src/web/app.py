@@ -154,11 +154,15 @@ def create_app(
                 logger.exception("notify seam raised during refresh; ignoring")
             fetched = sum(1 for e in events if e.type == tracker.EventType.NOW_TRACKING)
             changed = sum(1 for e in events if e.type == tracker.EventType.PRICE_CHANGED)
+            # Only launch the (interactive) Avito grab if there is anything to grab.
+            has_avito = any(r["source"] == "avito"
+                            for r in repo.get_tracked(conn, active_only=True))
         avito_launched = False
-        try:
-            avito_launched = bool(launch_avito_grab())
-        except Exception:  # noqa: BLE001 - a launch failure must not fail refresh
-            logger.exception("failed to launch the Avito grab")
+        if has_avito:
+            try:
+                avito_launched = bool(launch_avito_grab())
+            except Exception:  # noqa: BLE001 - a launch failure must not fail refresh
+                logger.exception("failed to launch the Avito grab")
         return {"cian_events": len(events), "fetched": fetched, "changed": changed,
                 "avito_launched": avito_launched}
 
@@ -221,6 +225,7 @@ def build_production_app():
         """Open the interactive Avito grab (scripts/avito-grab.ps1) in its own
         console window, so the user can load the tabs / solve a challenge and
         press Enter there — exactly as running the script by hand."""
+        import os
         import subprocess
         import sys
 
@@ -228,11 +233,14 @@ def build_production_app():
         if not script.exists():
             logger.warning("avito-grab.ps1 not found at %s; skipping Avito", script)
             return False
+        # Pass the auto-continue delay so the script reads the tabs unattended.
+        env = {**os.environ, "AVITO_GRAB_LOAD_TIME": str(settings.avito_grab_load_time)}
         # CREATE_NEW_CONSOLE (0x10) gives the interactive script its own window.
         creationflags = 0x00000010 if sys.platform == "win32" else 0
         subprocess.Popen(  # noqa: S603 - fixed local script, no user input
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
             cwd=str(script.parents[1]),
+            env=env,
             creationflags=creationflags,
         )
         return True

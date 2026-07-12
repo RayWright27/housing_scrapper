@@ -15,6 +15,15 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
+class SiteBlocked(Exception):
+    """The site could not be read this run (captcha / anti-bot / timeout).
+
+    Distinct from "listing absent": a block means we simply *could not check*,
+    so the tracker must NOT count it as a miss (that would falsely delist a
+    listing after a few blocked runs). A genuine removal (a 404) still returns
+    the ``None``/``[]`` sentinel and is counted as a miss (§8.7)."""
+
+
 @dataclass
 class RawListing:
     """A single listing as parsed straight from a site, before normalization.

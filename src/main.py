@@ -191,25 +191,29 @@ def cmd_remove(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 # run-once: one full tracking pass. The ONLY place the live adapter is built.
 # --------------------------------------------------------------------------- #
-def cmd_run_once(args: argparse.Namespace) -> int:
-    from config import settings
+def _cian_pass(conn, settings) -> list:
+    """One CIAN tracking pass over the watchlist, then notify. Returns events.
+
+    Only CIAN is auto-fetched. Avito is intentionally excluded: its firewall
+    blocks automation and repeated attempts flag the IP (§7); it is tracked via
+    `grab` (read your open tabs) or `ingest` (a saved page). Notifications are
+    delivered here at the CLI seam while the DB is still open (§9b)."""
     from src.adapters.cian import CianAdapter
     from src.notify import sink
     from src.tracker import run_once
 
+    with CianAdapter() as cian:
+        events = run_once({"cian": cian}, conn, settings)
+    sink.notify_events(conn, events, settings)
+    return events
+
+
+def cmd_run_once(args: argparse.Namespace) -> int:
+    from config import settings
+
     conn = _open_db()
     try:
-        # Only CIAN is auto-fetched. Avito is intentionally excluded: its firewall
-        # blocks automation and repeated attempts flag the IP (§7). Avito is
-        # tracked via `grab` (read your open tabs) or `ingest` (a saved page).
-        with CianAdapter() as cian:
-            adapters = {"cian": cian}
-            events = run_once(adapters, conn, settings)
-
-        # Deliver notifications AFTER persistence, while the DB is still open so
-        # the notifier's injected get_meta can read listing details (§9b). The
-        # notifier is built only at this seam — never inside tracker.py.
-        sink.notify_events(conn, events, settings)
+        events = _cian_pass(conn, settings)
     finally:
         conn.close()
 
@@ -218,6 +222,42 @@ def cmd_run_once(args: argparse.Namespace) -> int:
         return 0
     print(f"{len(events)} event(s):\n")
     _print_events(events)
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Scheduler: run a CIAN pass now, then every POLL_INTERVAL_HOURS (§16.7).
+
+    Long-running and Ctrl+C-stoppable. Avito is NOT scheduled — it needs a human
+    to load its tabs; use the dashboard's Refresh (or `avito-grab.ps1`) for it."""
+    import logging
+    import time
+    from datetime import datetime
+
+    from config import settings
+    from src.storage.db import backup_db
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    interval_h = max(1, settings.poll_interval_hours)
+    backup_db(settings.db_path, settings.db_backup_keep)  # snapshot on startup
+    print(f"scheduler: CIAN pass now, then every {interval_h}h  (Ctrl+C to stop)")
+    try:
+        while True:
+            try:
+                conn = _open_db()
+                try:
+                    events = _cian_pass(conn, settings)
+                finally:
+                    conn.close()
+                stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                print(f"[{stamp}] pass done: {len(events)} event(s); next in {interval_h}h")
+            except Exception:  # noqa: BLE001 - a bad pass must not kill the loop
+                logging.getLogger("realty").exception("scheduled pass failed; will retry")
+            time.sleep(interval_h * 3600)
+    except KeyboardInterrupt:
+        print("\nscheduler stopped")
     return 0
 
 
@@ -371,6 +411,12 @@ def cmd_grab(args: argparse.Namespace) -> int:
                         continue
                     mod = _parse_module(source)
                     kind = mod.classify_url(url)
+                    # Best-effort: let a still-loading tab finish before reading,
+                    # so an unattended grab doesn't parse a half-rendered page.
+                    try:
+                        page.wait_for_load_state("load", timeout=8_000)
+                    except Exception:  # noqa: BLE001 - proceed with whatever loaded
+                        pass
                     html = page.content()  # already-loaded DOM; no site request
                     raws = (mod.parse_search(html) if kind == "search"
                             else ([r for r in [mod.parse_listing(html, url)] if r]))
@@ -517,8 +563,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from config import settings
+    from src.storage.db import backup_db
     from src.web.app import build_production_app
 
+    backup_db(settings.db_path, settings.db_backup_keep)  # snapshot before serving
     app = build_production_app()
     print(f"dashboard on http://{settings.web_host}:{settings.web_port}  (Ctrl+C to stop)")
     uvicorn.run(app, host=settings.web_host, port=settings.web_port, log_level="info")
@@ -562,6 +610,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run-once", help="run one tracking pass and print events")
     r.set_defaults(func=cmd_run_once)
+
+    rn = sub.add_parser("run", help="scheduler: CIAN pass now, then every POLL_INTERVAL_HOURS")
+    rn.set_defaults(func=cmd_run)
 
     n = sub.add_parser("notify-test", help="[dev] send one sample Telegram message per event type")
     n.set_defaults(func=cmd_notify_test)
