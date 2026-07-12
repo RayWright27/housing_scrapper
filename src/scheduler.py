@@ -102,7 +102,7 @@ def run_scheduler(
     interval_h = max(1, settings.poll_interval_hours)
 
     if on_startup_backup:
-        _safe_startup_backup(conn_factory, settings)
+        startup_backup(conn_factory, settings)
 
     while not stop.is_set():
         _run_one(pass_fn, settings, conn_factory, interval_h)
@@ -140,7 +140,7 @@ def _run_one(pass_fn: PassFn, settings, conn_factory: ConnFactory,
         conn.close()
 
 
-def _safe_startup_backup(conn_factory: ConnFactory, settings) -> None:
+def startup_backup(conn_factory: ConnFactory, settings) -> None:
     """Take a due-based snapshot at startup (best-effort; never blocks start)."""
     try:
         conn = conn_factory()

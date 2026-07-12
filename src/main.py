@@ -563,7 +563,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         scheduler.start_background(_cian_pass, settings, conn_factory=_open_db)
         sched_note = f" · scheduler every {max(1, settings.poll_interval_hours)}h"
     else:
-        scheduler._safe_startup_backup(_open_db, settings)  # dashboard-only: still snapshot
+        scheduler.startup_backup(_open_db, settings)  # dashboard-only: still snapshot
         sched_note = " · scheduler off (dashboard only)"
 
     print(f"dashboard on http://{settings.web_host}:{settings.web_port}{sched_note}"
