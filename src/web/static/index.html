@@ -19,7 +19,12 @@
   h1 { font-size:18px; margin:0; } h2 { font-size:14px; color:var(--muted); margin:0 0 8px; }
   .wrap { max-width:1100px; margin:0 auto; padding:18px; }
   .top { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
-  .toolbar { display:flex; gap:8px; align-items:center; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .sched { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
+           padding:5px 9px; border:1px solid var(--line); border-radius:8px; cursor:default; }
+  .sdot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+  .sdot.ok { background:var(--down); } .sdot.err { background:var(--up); }
+  .sdot.warn { background:#e0a020; } .sdot.off { background:var(--dot-off); }
   .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:14px 0 20px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
   .card .n { font-size:26px; font-weight:700; } .card .l { color:var(--muted); font-size:12px; }
@@ -74,6 +79,7 @@
   <div class="top">
     <h1>🏠 Realty Tracker <span class="muted" style="font-size:12px" id="subtitle"></span></h1>
     <div class="toolbar">
+      <span class="sched" id="schedStatus" title=""></span>
       <button class="primary" id="refreshBtn"></button>
       <select id="lang"><option value="ru">RU</option><option value="en">EN</option></select>
       <button class="icon" id="themeBtn" title="theme"></button>
@@ -158,6 +164,10 @@ const I18N = {
     th_checked:"Проверено", just_now:"только что", min_ago:"мин назад", h_ago:"ч назад", d_ago:"дн назад",
     st_updated:"обновлено", st_same:"без изменений", st_unchecked:"не проверено",
     st_checking:"проверяется…", checked_never:"—",
+    u_min:"мин", u_h:"ч", u_d:"дн", sched_in:"через",
+    sched_run:"запуск", sched_never:"планировщик ещё не запускался",
+    sched_overdue:"просрочен", sched_ok:"работает", sched_err:"сбой последнего запуска",
+    sched_title:(run,next,n,err)=>`Планировщик CIAN\nПосл. запуск: ${run}\nСледующий: ${next}\nСобытий: ${n}`+(err?`\nОшибка: ${err}`:``),
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -191,6 +201,10 @@ const I18N = {
     th_checked:"Checked", just_now:"just now", min_ago:"min ago", h_ago:"h ago", d_ago:"d ago",
     st_updated:"updated", st_same:"unchanged", st_unchecked:"not checked",
     st_checking:"checking…", checked_never:"—",
+    u_min:"min", u_h:"h", u_d:"d", sched_in:"in",
+    sched_run:"ran", sched_never:"scheduler has not run yet",
+    sched_overdue:"overdue", sched_ok:"running", sched_err:"last run failed",
+    sched_title:(run,next,n,err)=>`CIAN scheduler\nLast run: ${run}\nNext: ${next}\nEvents: ${n}`+(err?`\nError: ${err}`:``),
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -200,6 +214,7 @@ const rub = n => (n==null ? "—" : new Intl.NumberFormat("ru-RU").format(Math.r
 const pct = n => (n==null ? "—" : (n>0?"+":"") + n.toFixed(1) + "%");
 const PALETTE = ["#3b6ef5","#1f9e5f","#d64545","#e0a020","#9b51e0","#0aa3b5","#e0713b","#5a6485"];
 let LISTINGS = [], SUMMARY = {total:0,active:0,delisted:0,changes_7d:0}, SELECTED = new Set(), HIST = {}, chart = null;
+let SCHED = null;   // background-scheduler heartbeat from /api/scheduler
 // Per-refresh outcome per listing id: {k:'changed'|'same'|'unchecked'}. Set by
 // doRefresh, shown as row badges until the next refresh/add/remove.
 let REFRESH_STATUS = new Map();
@@ -216,6 +231,13 @@ function freshness(iso){
   if(!iso) return "stale";
   const s=(Date.now()-Date.parse(iso))/1000;
   return s<1800 ? "fresh" : (s<86400 ? "recent" : "stale");
+}
+// Human "in X" for a future timestamp (the scheduler's next run).
+function relFuture(iso){
+  const s=(Date.parse(iso)-Date.now())/1000;
+  if(s<=0) return t("sched_overdue");
+  const [n,u] = s<3600 ? [Math.ceil(s/60),"u_min"] : s<86400 ? [Math.floor(s/3600),"u_h"] : [Math.floor(s/86400),"u_d"];
+  return t("sched_in")+" "+n+" "+t(u);
 }
 
 async function jget(u){ const r=await fetch(u); if(!r.ok) throw new Error((await r.json()).detail||r.statusText); return r.json(); }
@@ -260,13 +282,37 @@ function applyStaticText(){
 }
 
 async function loadAll(){
-  const [summary, listings] = await Promise.all([jget("/api/summary"), jget("/api/listings")]);
-  SUMMARY = summary; LISTINGS = listings;
+  const [summary, listings, sched] = await Promise.all([
+    jget("/api/summary"), jget("/api/listings"), jget("/api/scheduler").catch(()=>null)]);
+  SUMMARY = summary; LISTINGS = listings; SCHED = sched;
   SELECTED = new Set([...SELECTED].filter(id => LISTINGS.some(l=>l.id===id)));
   REFRESH_STATUS = new Map();   // stale after any reload; doRefresh re-sets its own
   renderAll();
 }
-function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); }
+function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); renderScheduler(); }
+
+// The scheduler heartbeat pill (dot colour = health). Kept live by a timer so it
+// reflects a background pass even when the user is idle — makes autostart trustworthy.
+function renderScheduler(){
+  const el=document.getElementById("schedStatus");
+  if(!el) return;
+  if(!SCHED || !SCHED.known){
+    el.innerHTML=`<span class="sdot off"></span>${t("sched_never")}`; el.title=""; return;
+  }
+  const err = SCHED.last_status==="error";
+  const overdue = SCHED.next_run_at && Date.parse(SCHED.next_run_at) < Date.now();
+  const cls = err ? "err" : (overdue ? "warn" : "ok");
+  const parts=[t("sched_run")+" "+relTime(SCHED.last_run_at)];
+  if(SCHED.next_run_at && !err) parts.push(relFuture(SCHED.next_run_at));
+  if(err) parts.push(t("sched_err"));
+  el.innerHTML=`<span class="sdot ${cls}"></span>${parts.join(" · ")}`;
+  const fmt = iso => iso ? new Date(iso).toLocaleString(t("date_locale")) : "—";
+  el.title=t("sched_title")(fmt(SCHED.last_run_at), fmt(SCHED.next_run_at),
+                            SCHED.last_events==null?"—":SCHED.last_events, SCHED.last_error);
+}
+async function loadScheduler(){
+  try{ SCHED = await jget("/api/scheduler"); renderScheduler(); }catch(e){}
+}
 
 function renderCards(){
   document.getElementById("cards").innerHTML = [
@@ -515,6 +561,8 @@ document.getElementById("lang").onchange=e=>{ LANG=e.target.value; localStorage.
 
 applyStaticText();
 loadAll().catch(e=>document.getElementById("addMsg").textContent=t("load_error")(e.message));
+// Keep the scheduler pill live (relative times + background passes) while idle.
+setInterval(loadScheduler, 60000);
 </script>
 </body>
 </html>

@@ -116,6 +116,22 @@ def test_history_prepends_pre_window_anchor(conn) -> None:
     assert service.history(conn, 999, "all", now=NOW) is None
 
 
+def test_scheduler_status_unknown_then_known(conn) -> None:
+    from src import scheduler as sched
+
+    # Fresh DB: no pass has run, so the status is neutral/unknown.
+    st = service.scheduler_status(conn)
+    assert st["known"] is False and st["last_run_at"] is None
+
+    # After a recorded pass the heartbeat surfaces for the dashboard indicator.
+    sched.record_pass_result(conn, ["e1"], status="ok", error="",
+                             next_run_at="2026-07-04T18:00:00+00:00", now=NOW)
+    st = service.scheduler_status(conn)
+    assert st["known"] is True
+    assert st["last_run_at"] == NOW and st["last_status"] == "ok"
+    assert st["last_events"] == 1 and st["last_error"] is None
+
+
 def test_delisted_listing_flagged(conn) -> None:
     lid = _seed(conn, "1", 50.0, [(100, NOW)])
     conn.execute("UPDATE listings SET is_active = 0 WHERE id = ?", (lid,))

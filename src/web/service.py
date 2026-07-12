@@ -171,6 +171,28 @@ def summary(conn: sqlite3.Connection, now: str | None = None) -> dict:
     }
 
 
+def scheduler_status(conn: sqlite3.Connection) -> dict:
+    """The background scheduler's heartbeat for the dashboard status indicator.
+
+    Reads the ``app_meta`` keys the scheduler writes each pass (§9a). ``known`` is
+    False when no pass has run yet (fresh DB, or the scheduler is disabled and
+    nothing else has written a heartbeat) — the client shows a neutral dot then.
+    """
+    from src import scheduler as sched
+
+    meta = repo.get_all_meta(conn)
+    last_run = meta.get(sched.LAST_RUN_AT)
+    events = meta.get(sched.LAST_EVENTS)
+    return {
+        "known": last_run is not None,
+        "last_run_at": last_run,
+        "next_run_at": meta.get(sched.NEXT_RUN_AT),
+        "last_status": meta.get(sched.LAST_STATUS),
+        "last_error": meta.get(sched.LAST_ERROR) or None,
+        "last_events": int(events) if events is not None else None,
+    }
+
+
 def history(
     conn: sqlite3.Connection, listing_id: int, range_: str = "all",
     now: str | None = None,

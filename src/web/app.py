@@ -81,6 +81,11 @@ def create_app(
         with get_conn() as conn:
             return service.listing_rows(conn)
 
+    @app.get("/api/scheduler")
+    def api_scheduler() -> dict:
+        with get_conn() as conn:
+            return service.scheduler_status(conn)
+
     @app.get("/api/listings/{listing_id}/history")
     def api_history(listing_id: int, range: str = "all") -> dict:
         if range not in ("all", "90d", "30d"):
