@@ -56,9 +56,26 @@ them by hand if you want to keep your data/config:
 python -m src.main list           # show the watchlist
 python -m src.main add --source cian --url "https://..." --note "2-room"
 python -m src.main remove --id 3  # deactivate a tracked source
-python -m src.main run-once       # one tracking pass now (fetch → diff → notify)
-python -m src.main serve          # local dashboard at http://127.0.0.1:8000
+python -m src.main run-once       # one tracking pass now (fetch -> diff -> notify)
+python -m src.main run            # scheduler: a CIAN pass now, then every N hours
+python -m src.main serve          # dashboard at http://127.0.0.1:8000 + scheduler
 ```
+
+`serve` also runs the CIAN scheduler on a background thread, so one process gives
+both the dashboard and periodic scraping (set `SCHEDULER_IN_SERVE=0` for
+dashboard-only). The dashboard header shows a scheduler status pill so you can
+see it is alive. Avito still needs a human to load its tabs and is not scheduled
+(use the dashboard **Refresh** button, which opens the interactive grab).
+
+### Start automatically at logon
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1   # register
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-autostart.ps1 # remove
+```
+
+This registers a Windows Scheduled Task that runs `serve` at logon (dashboard +
+background scheduler). It changes a Windows setting — review the script first.
 
 Other subcommands: `fetch`, `capture`, `ingest`, `grab`, `warmup`, `urls`,
 `notify-test`. See `python -m src.main --help` and CLAUDE.md §11 for details.
