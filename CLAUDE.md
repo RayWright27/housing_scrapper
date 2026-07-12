@@ -46,8 +46,11 @@ Concretely:
 - **FastAPI** + **uvicorn** for the local read/manage web dashboard (§9).
 - **Chart.js** (loaded from CDN in the static page) for the price chart.
   No frontend build step — one static HTML page, vanilla JS.
-- **python-telegram-bot** for push notifications on price changes.
-- **APScheduler** for in-process scheduling.
+- **Telegram Bot API** for push notifications on price changes — called with the
+  stdlib `urllib` (no `python-telegram-bot` dependency; the need is a single
+  `sendMessage` POST, so a library does not earn its place).
+- **In-process scheduling** via a plain stdlib loop in `main.py` (`run` command) —
+  a fixed interval is all we need, so no APScheduler dependency.
 - **pytest** for tests.
 - **python-dotenv** for config/secrets.
 
@@ -82,13 +85,13 @@ realty-tracker/
 │   │   └── repository.py # upsert_listing, record_price, last_price, ...
 │   ├── tracker.py        # orchestration: fetch -> normalize -> diff -> notify
 │   ├── notify/
-│   │   └── telegram.py
+│   │   ├── telegram.py   # DB-free formatter + sender + outbox port
+│   │   └── sink.py       # composition glue: DB-backed outbox + get_meta seam
 │   ├── web/
 │   │   ├── app.py        # FastAPI app: JSON API over repository + add/remove
 │   │   └── static/
 │   │       └── index.html  # single-page dashboard (vanilla JS + Chart.js CDN)
-│   ├── scheduler.py
-│   └── main.py           # entrypoint / CLI
+│   └── main.py           # entrypoint / CLI (incl. `run` scheduler loop)
 ├── tests/
 │   ├── fixtures/         # saved raw payloads/HTML for offline adapter tests
 │   ├── test_storage.py
@@ -230,6 +233,10 @@ In `tracker.py`, per tracked source:
 6. If new price == last price -> do nothing (no row, no noise).
 7. Listings in `tracked_sources` that were not seen this run -> mark
    `is_active=0` after N consecutive misses (configurable), emit "delisted".
+   A **soft block** (captcha / anti-bot / timeout) is NOT a miss: the adapter
+   raises `SiteBlocked` and the tracker skips that source for the run without
+   penalising it — otherwise a few blocked runs would falsely delist a live
+   listing. Only a confirmed absence (a 404 → `None`/`[]` sentinel) counts.
 
 Change detection must be fully unit-testable on fake data with no network and no
 real DB file (use an in-memory SQLite). This is the part we trust most, so it
@@ -334,9 +341,14 @@ delivery bookkeeping, not business state.
 - `.env.example` lists every required key with placeholder values and is committed.
 - `.env` holds real values and is **gitignored**. NEVER write real secrets into
   any committed file, test, or log line.
-- Required keys: `DB_PATH`, `POLL_INTERVAL_HOURS`, `WEB_HOST` (default
-  `127.0.0.1`), `WEB_PORT` (default `8000`), and proxy vars if used
-  (`PROXY_URL` or empty).
+- Required keys: `DB_PATH`, `POLL_INTERVAL_HOURS` (the `run` scheduler's CIAN
+  interval), `WEB_HOST` (default `127.0.0.1`), `WEB_PORT` (default `8000`), and
+  proxy vars if used (`PROXY_URL` or empty).
+- Operational tunables (all have defaults): `DB_BACKUP_KEEP` (timestamped DB
+  snapshots kept in `data/backups`, made on `serve`/`run` startup),
+  `CIAN_HEADLESS` (CIAN fetches run headless regardless of `BROWSER_HEADLESS`,
+  which stays headful for the Avito grab/warmup), and `AVITO_GRAB_LOAD_TIME`
+  (seconds the grab helper waits for tabs before auto-reading them).
 - Optional keys: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — if either is absent,
   Telegram notifications are disabled and the rest still runs. `TELEGRAM_CHAT_ID`
   may list **several** recipients, comma-separated; every id receives each
