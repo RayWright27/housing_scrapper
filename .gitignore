@@ -223,5 +223,6 @@ data/
 # Raw hand-saved Avito captures (contain seller PII; never commit)
 tests/fixtures/_raw_avito/
 
-# Claude Code machine-local settings (personal; the shared launch.json is kept)
-.claude/settings.local.json
+# Claude Code local config — machine-specific (paths, permissions); never synced,
+# so it can't conflict when the same repo is used from two computers.
+.claude/
