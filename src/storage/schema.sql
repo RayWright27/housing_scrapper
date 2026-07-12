@@ -78,3 +78,22 @@ CREATE TABLE IF NOT EXISTS pending_notifications (
 
 CREATE INDEX IF NOT EXISTS idx_pending_notifications_created
     ON pending_notifications (created_at, id);
+
+-- Small key/value store for operational state that is neither price history nor
+-- a tracked object: the scheduler's heartbeat (last/next run, last result/error)
+-- and the last-backup timestamp. Not durable business data — just enough for the
+-- dashboard to show whether the background pass is alive and healthy.
+CREATE TABLE IF NOT EXISTS app_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- A user-set price target per listing (CLAUDE.md §9, price-target alerts). User
+-- intent, kept OUT of the scraped `listings` table so an upsert never touches it.
+-- The target does not gate change detection: it enriches the price-change
+-- notification and the dashboard row with "distance to target". One per listing.
+CREATE TABLE IF NOT EXISTS listing_targets (
+    listing_id   INTEGER PRIMARY KEY REFERENCES listings (id),
+    target_price INTEGER NOT NULL,          -- rubles, no decimals
+    created_at   TEXT    NOT NULL           -- ISO-8601 UTC
+);
