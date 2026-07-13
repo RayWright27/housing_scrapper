@@ -103,10 +103,13 @@ realty-tracker/
 
 ## 5. Data model
 
-Three core tables (below), plus two operational tables — `source_listings`
+Three core tables (below), plus operational tables — `source_listings`
 (source↔listing links + the consecutive-miss counter that drives delisting,
-§8.7) and `pending_notifications` (the Telegram outbox, §9b). Treat `schema.sql`
-as the single source of truth for DDL.
+§8.7), `pending_notifications` (the Telegram outbox, §9b), `app_meta` (a small
+key/value store for the scheduler heartbeat + last-backup timestamp) and
+`listing_targets` (a user-set price target per listing — display context for
+notifications and the dashboard, never a change-detection input). Treat
+`schema.sql` as the single source of truth for DDL.
 
 **`tracked_sources`** — the fixed list of things to watch.
 | column      | type    | notes                                  |
@@ -259,7 +262,10 @@ only), no frontend build step.
 Layout — three stacked regions on one page:
 
 1. **Summary strip** — small metric cards: total tracked, active, delisted,
-   number of price changes in the last 7 days.
+   number of price changes in the last 7 days. The header also shows a
+   **scheduler status pill** (`GET /api/scheduler`): a health dot (green ok /
+   amber overdue / red error) plus "ran … · next in …", kept live by a timer, so
+   the background/autostarted scheduler is visibly alive and trustworthy.
 
 2. **Tracking section** (the add/manage surface):
    - A text input for a listing URL + an optional note field + an "add" button.
@@ -274,9 +280,11 @@ Layout — three stacked regions on one page:
      calls the seam. Reject unknown hosts with a clear message.
    - A table of all tracked objects, one row each, columns:
      source badge · object summary (rooms · area · floor · note) · current price
-     · **₽/m²** · **Δ total** (% from first observed price) · **days since last
-     price change** · **last checked** (relative `last_seen_at` + a freshness
-     dot) · remove (×). Delisted rows render dimmed but stay visible. After a
+     · **₽/m²** · **target** (a per-listing price target you set inline; shows the
+     target + % above/below it, green when at/below) · **Δ total** (% from first
+     observed price) · **days since last price change** · **last checked**
+     (relative `last_seen_at` + a freshness dot) · remove (×). Delisted rows
+     render dimmed but stay visible. After a
      `Refresh`, rows carry a transient badge — updated / unchanged / not checked
      — computed client-side by diffing each row's price and `last_seen_at`
      against the pre-refresh snapshot; the badges clear on the next reload.
@@ -303,8 +311,16 @@ API shape (keep it this simple):
 - `GET /api/listings/{id}/history?range=all|90d|30d` — price observations for the
   chart.
 - `GET /api/summary` — the metric-strip numbers.
+- `GET /api/scheduler` — the background scheduler's heartbeat (last/next run,
+  last status/error, event count) from `app_meta`; feeds a header status pill
+  (health dot + relative times) so the autostarted scheduler is observable. This
+  is a read of operational state, not business data.
 - `POST /api/tracked` — body `{url, note}`; detect source, insert, fetch once,
   notify (via the injected seam) on what the fetch found.
+- `PUT /api/listings/{id}/target` — body `{target_price}`; set a per-listing
+  price target (rubles). `DELETE` clears it. A target is display CONTEXT only —
+  it enriches the price-change notification and the dashboard row with
+  distance-to-target; it does NOT gate change detection or which events notify.
 - `DELETE /api/tracked/{id}` — deactivate (set `active=0`); never hard-delete
   history.
 - `POST /api/refresh` — run one CIAN pass now (like `run-once`) and notify on
@@ -345,7 +361,10 @@ delivery bookkeeping, not business state.
   interval), `WEB_HOST` (default `127.0.0.1`), `WEB_PORT` (default `8000`), and
   proxy vars if used (`PROXY_URL` or empty).
 - Operational tunables (all have defaults): `DB_BACKUP_KEEP` (timestamped DB
-  snapshots kept in `data/backups`, made on `serve`/`run` startup),
+  snapshots kept in `data/backups`, made at startup and then at most once/24h
+  while the scheduler runs — not just once per launch), `SCHEDULER_IN_SERVE`
+  (when `serve` runs, also run the CIAN scheduler on a background thread so one
+  process gives both the dashboard and periodic scraping; `0` = dashboard only),
   `CIAN_HEADLESS` (CIAN fetches run headless regardless of `BROWSER_HEADLESS`,
   which stays headful for the Avito grab/warmup), and `AVITO_GRAB_LOAD_TIME`
   (seconds the grab helper waits for tabs before auto-reading them).
@@ -378,7 +397,12 @@ python -m src.main run-once
 python -m src.main run
 
 # start the local web dashboard at http://WEB_HOST:WEB_PORT
+# (also runs the CIAN scheduler on a background thread unless SCHEDULER_IN_SERVE=0)
 python -m src.main serve
+
+# start the dashboard + scheduler automatically at Windows logon (one process).
+# Registers a Scheduled Task; review it first. Remove with uninstall-autostart.ps1.
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 
 # discover recipient chat ids (each person messages the bot first, then run this)
 python -m src.main chat-ids

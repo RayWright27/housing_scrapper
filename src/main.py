@@ -228,34 +228,22 @@ def cmd_run_once(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     """Scheduler: run a CIAN pass now, then every POLL_INTERVAL_HOURS (§16.7).
 
-    Long-running and Ctrl+C-stoppable. Avito is NOT scheduled — it needs a human
-    to load its tabs; use the dashboard's Refresh (or `avito-grab.ps1`) for it."""
+    Long-running and Ctrl+C-stoppable. The loop, heartbeat, and daily backup live
+    in :mod:`src.scheduler` and are shared with `serve`'s background thread. Avito
+    is NOT scheduled — it needs a human to load its tabs; use the dashboard's
+    Refresh (or `avito-grab.ps1`) for it."""
     import logging
-    import time
-    from datetime import datetime
 
     from config import settings
-    from src.storage.db import backup_db
+    from src.scheduler import run_scheduler
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     interval_h = max(1, settings.poll_interval_hours)
-    backup_db(settings.db_path, settings.db_backup_keep)  # snapshot on startup
     print(f"scheduler: CIAN pass now, then every {interval_h}h  (Ctrl+C to stop)")
     try:
-        while True:
-            try:
-                conn = _open_db()
-                try:
-                    events = _cian_pass(conn, settings)
-                finally:
-                    conn.close()
-                stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                print(f"[{stamp}] pass done: {len(events)} event(s); next in {interval_h}h")
-            except Exception:  # noqa: BLE001 - a bad pass must not kill the loop
-                logging.getLogger("realty").exception("scheduled pass failed; will retry")
-            time.sleep(interval_h * 3600)
+        run_scheduler(_cian_pass, settings, conn_factory=_open_db)
     except KeyboardInterrupt:
         print("\nscheduler stopped")
     return 0
@@ -563,12 +551,23 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from config import settings
-    from src.storage.db import backup_db
+    from src import scheduler
     from src.web.app import build_production_app
 
-    backup_db(settings.db_path, settings.db_backup_keep)  # snapshot before serving
     app = build_production_app()
-    print(f"dashboard on http://{settings.web_host}:{settings.web_port}  (Ctrl+C to stop)")
+
+    if settings.scheduler_in_serve:
+        # Decision A: one autostarted process serves the dashboard AND runs the
+        # CIAN scheduler on a background thread (which also takes the startup
+        # backup, due-based). Set SCHEDULER_IN_SERVE=0 to serve the dashboard only.
+        scheduler.start_background(_cian_pass, settings, conn_factory=_open_db)
+        sched_note = f" · scheduler every {max(1, settings.poll_interval_hours)}h"
+    else:
+        scheduler.startup_backup(_open_db, settings)  # dashboard-only: still snapshot
+        sched_note = " · scheduler off (dashboard only)"
+
+    print(f"dashboard on http://{settings.web_host}:{settings.web_port}{sched_note}"
+          "  (Ctrl+C to stop)")
     uvicorn.run(app, host=settings.web_host, port=settings.web_port, log_level="info")
     return 0
 

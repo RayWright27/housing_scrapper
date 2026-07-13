@@ -116,6 +116,22 @@ def test_history_prepends_pre_window_anchor(conn) -> None:
     assert service.history(conn, 999, "all", now=NOW) is None
 
 
+def test_scheduler_status_unknown_then_known(conn) -> None:
+    from src import scheduler as sched
+
+    # Fresh DB: no pass has run, so the status is neutral/unknown.
+    st = service.scheduler_status(conn)
+    assert st["known"] is False and st["last_run_at"] is None
+
+    # After a recorded pass the heartbeat surfaces for the dashboard indicator.
+    sched.record_pass_result(conn, ["e1"], status="ok", error="",
+                             next_run_at="2026-07-04T18:00:00+00:00", now=NOW)
+    st = service.scheduler_status(conn)
+    assert st["known"] is True
+    assert st["last_run_at"] == NOW and st["last_status"] == "ok"
+    assert st["last_events"] == 1 and st["last_error"] is None
+
+
 def test_delisted_listing_flagged(conn) -> None:
     lid = _seed(conn, "1", 50.0, [(100, NOW)])
     conn.execute("UPDATE listings SET is_active = 0 WHERE id = ?", (lid,))
@@ -183,6 +199,51 @@ def test_endpoints_and_post_immediate_fetch(conn) -> None:
     sid = listings[0]["tracked_source_id"]
     assert client.delete(f"/api/tracked/{sid}").status_code == 200
     assert client.get("/api/listings").json()[0]["current_price"] == 5_000_000  # kept
+
+
+def test_target_delta_pct() -> None:
+    assert service.target_delta_pct(11_000_000, 10_000_000) == 10.0   # 10% above
+    assert service.target_delta_pct(9_500_000, 10_000_000) == -5.0    # below target
+    assert service.target_delta_pct(None, 10_000_000) is None
+    assert service.target_delta_pct(10_000_000, None) is None
+    assert service.target_delta_pct(10_000_000, 0) is None
+
+
+def test_set_and_clear_target_endpoints(conn) -> None:
+    client = _client(conn)
+    client.post("/api/tracked", json={"url": "https://spb.cian.ru/sale/flat/777/"})
+    lid = client.get("/api/listings").json()[0]["id"]
+
+    # No target initially.
+    assert client.get("/api/listings").json()[0]["target_price"] is None
+
+    # Set it -> row exposes target_price + distance (current 5M vs target 4M = +25%).
+    assert client.put(f"/api/listings/{lid}/target",
+                      json={"target_price": 4_000_000}).status_code == 200
+    row = client.get("/api/listings").json()[0]
+    assert row["target_price"] == 4_000_000 and row["target_delta_pct"] == 25.0
+
+    # A non-positive target is rejected; an unknown listing is 404.
+    assert client.put(f"/api/listings/{lid}/target",
+                      json={"target_price": 0}).status_code == 400
+    assert client.put("/api/listings/9999/target",
+                      json={"target_price": 5}).status_code == 404
+
+    # Clear it.
+    assert client.delete(f"/api/listings/{lid}/target").status_code == 200
+    assert client.get("/api/listings").json()[0]["target_price"] is None
+
+
+def test_target_reaches_notifier_via_meta_lookup(conn) -> None:
+    # A set target must flow into the notifier's ListingMeta (distance-to-target
+    # line) through the shared get_meta seam — not just the dashboard.
+    from src.notify.sink import make_meta_lookup
+
+    lid = repo.upsert_listing(conn, source="cian", external_id="1", url="u", now=NOW,
+                              area_total=50.0)
+    repo.set_target(conn, lid, 12_000_000, NOW)
+    meta = make_meta_lookup(conn)(lid)
+    assert meta is not None and meta.target_price == 12_000_000
 
 
 def test_post_unknown_host_is_400(conn) -> None:

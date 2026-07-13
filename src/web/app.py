@@ -52,6 +52,10 @@ class AddBody(BaseModel):
     note: str | None = None
 
 
+class TargetBody(BaseModel):
+    target_price: int
+
+
 def _no_notify(conn, events) -> None:
     """Default notify seam: do nothing (used by offline tests)."""
 
@@ -80,6 +84,11 @@ def create_app(
     def api_listings() -> list[dict]:
         with get_conn() as conn:
             return service.listing_rows(conn)
+
+    @app.get("/api/scheduler")
+    def api_scheduler() -> dict:
+        with get_conn() as conn:
+            return service.scheduler_status(conn)
 
     @app.get("/api/listings/{listing_id}/history")
     def api_history(listing_id: int, range: str = "all") -> dict:
@@ -165,6 +174,25 @@ def create_app(
                 logger.exception("failed to launch the Avito grab")
         return {"cian_events": len(events), "fetched": fetched, "changed": changed,
                 "avito_launched": avito_launched}
+
+    @app.put("/api/listings/{listing_id}/target")
+    def api_set_target(listing_id: int, body: TargetBody) -> dict:
+        """Set a listing's price target (rubles). Enriches its price-change
+        notifications and dashboard row with distance-to-target; it does not
+        change what gets tracked or when a message is sent."""
+        if body.target_price <= 0:
+            raise HTTPException(status_code=400, detail="target_price must be positive")
+        with get_conn() as conn:
+            if repo.get_listing(conn, listing_id) is None:
+                raise HTTPException(status_code=404, detail="listing not found")
+            repo.set_target(conn, listing_id, body.target_price, service._now_iso())
+        return {"listing_id": listing_id, "target_price": body.target_price}
+
+    @app.delete("/api/listings/{listing_id}/target")
+    def api_clear_target(listing_id: int) -> dict:
+        with get_conn() as conn:
+            repo.clear_target(conn, listing_id)
+        return {"listing_id": listing_id, "target_price": None}
 
     @app.delete("/api/tracked/{tracked_id}")
     def api_remove(tracked_id: int) -> dict:

@@ -19,7 +19,12 @@
   h1 { font-size:18px; margin:0; } h2 { font-size:14px; color:var(--muted); margin:0 0 8px; }
   .wrap { max-width:1100px; margin:0 auto; padding:18px; }
   .top { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
-  .toolbar { display:flex; gap:8px; align-items:center; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .sched { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
+           padding:5px 9px; border:1px solid var(--line); border-radius:8px; cursor:default; }
+  .sdot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+  .sdot.ok { background:var(--down); } .sdot.err { background:var(--up); }
+  .sdot.warn { background:#e0a020; } .sdot.off { background:var(--dot-off); }
   .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:14px 0 20px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
   .card .n { font-size:26px; font-weight:700; } .card .l { color:var(--muted); font-size:12px; }
@@ -47,6 +52,12 @@
   .rb.wait { background:rgba(224,160,32,.16); color:#b9821a; }
   .badge { font-size:11px; padding:2px 6px; border-radius:6px; background:var(--line); color:var(--muted); }
   .up { color:var(--up); } .down { color:var(--down); } .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .tgt { cursor:pointer; white-space:nowrap; }
+  .tgt:hover { text-decoration:underline dotted; }
+  .tbadge { font-size:11px; margin-left:5px; }
+  .tset { border:1px dashed var(--line); background:none; color:var(--muted); cursor:pointer;
+          border-radius:6px; padding:2px 6px; font-size:13px; }
+  .tset:hover { border-color:var(--accent); color:var(--accent); }
   .x { color:var(--muted); cursor:pointer; border:none; background:none; font-size:16px; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
   .chip { font-size:12px; padding:4px 8px; border-radius:20px; border:1px solid var(--line);
@@ -74,6 +85,7 @@
   <div class="top">
     <h1>🏠 Realty Tracker <span class="muted" style="font-size:12px" id="subtitle"></span></h1>
     <div class="toolbar">
+      <span class="sched" id="schedStatus" title=""></span>
       <button class="primary" id="refreshBtn"></button>
       <select id="lang"><option value="ru">RU</option><option value="en">EN</option></select>
       <button class="icon" id="themeBtn" title="theme"></button>
@@ -134,6 +146,8 @@ const I18N = {
     msg_enter_url:"Введите ссылку.", msg_adding:"Добавляем и загружаем — это может занять несколько секунд…",
     th_source:"Источник", th_object:"Объект", th_price:"Цена", th_ppm2:"₽/м²",
     th_delta:"Δ всего", th_since:"С посл. изм.", empty_table:"Пока нет объектов. Добавьте ссылку CIAN выше.",
+    th_target:"Цель", target_set:"Задать целевую цену", target_edit:"Изменить целевую цену",
+    target_prompt:"Целевая цена в рублях (пусто — убрать цель):",
     h_history:"История цен", lbl_range:"Период", opt_all:"Всё", opt_90:"90д", opt_30:"30д",
     lbl_yaxis:"Ось Y", opt_rub:"₽ (абсолют.)", opt_m2:"₽/м²", opt_pct:"% от старта",
     hint_select:"Выберите объекты выше для графика.", hint_greyed:"Часть рядов скрыта (нет площади для ₽/м²).",
@@ -158,6 +172,10 @@ const I18N = {
     th_checked:"Проверено", just_now:"только что", min_ago:"мин назад", h_ago:"ч назад", d_ago:"дн назад",
     st_updated:"обновлено", st_same:"без изменений", st_unchecked:"не проверено",
     st_checking:"проверяется…", checked_never:"—",
+    u_min:"мин", u_h:"ч", u_d:"дн", sched_in:"через",
+    sched_run:"запуск", sched_never:"планировщик ещё не запускался",
+    sched_overdue:"просрочен", sched_ok:"работает", sched_err:"сбой последнего запуска",
+    sched_title:(run,next,n,err)=>`Планировщик CIAN\nПосл. запуск: ${run}\nСледующий: ${next}\nСобытий: ${n}`+(err?`\nОшибка: ${err}`:``),
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -167,6 +185,8 @@ const I18N = {
     msg_enter_url:"Enter a URL.", msg_adding:"Adding and fetching once — this can take a few seconds…",
     th_source:"Source", th_object:"Object", th_price:"Price", th_ppm2:"₽/m²",
     th_delta:"Δ total", th_since:"Since change", empty_table:"No objects tracked yet. Add a CIAN URL above to begin.",
+    th_target:"Target", target_set:"Set a target price", target_edit:"Edit target price",
+    target_prompt:"Target price in rubles (empty to remove the target):",
     h_history:"Price history", lbl_range:"Range", opt_all:"All", opt_90:"90d", opt_30:"30d",
     lbl_yaxis:"Y-axis", opt_rub:"₽ (absolute)", opt_m2:"₽/m²", opt_pct:"% from start",
     hint_select:"Select objects above to plot.", hint_greyed:"Some series hidden (no area for ₽/m²).",
@@ -191,6 +211,10 @@ const I18N = {
     th_checked:"Checked", just_now:"just now", min_ago:"min ago", h_ago:"h ago", d_ago:"d ago",
     st_updated:"updated", st_same:"unchanged", st_unchecked:"not checked",
     st_checking:"checking…", checked_never:"—",
+    u_min:"min", u_h:"h", u_d:"d", sched_in:"in",
+    sched_run:"ran", sched_never:"scheduler has not run yet",
+    sched_overdue:"overdue", sched_ok:"running", sched_err:"last run failed",
+    sched_title:(run,next,n,err)=>`CIAN scheduler\nLast run: ${run}\nNext: ${next}\nEvents: ${n}`+(err?`\nError: ${err}`:``),
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -200,6 +224,7 @@ const rub = n => (n==null ? "—" : new Intl.NumberFormat("ru-RU").format(Math.r
 const pct = n => (n==null ? "—" : (n>0?"+":"") + n.toFixed(1) + "%");
 const PALETTE = ["#3b6ef5","#1f9e5f","#d64545","#e0a020","#9b51e0","#0aa3b5","#e0713b","#5a6485"];
 let LISTINGS = [], SUMMARY = {total:0,active:0,delisted:0,changes_7d:0}, SELECTED = new Set(), HIST = {}, chart = null;
+let SCHED = null;   // background-scheduler heartbeat from /api/scheduler
 // Per-refresh outcome per listing id: {k:'changed'|'same'|'unchecked'}. Set by
 // doRefresh, shown as row badges until the next refresh/add/remove.
 let REFRESH_STATUS = new Map();
@@ -216,6 +241,13 @@ function freshness(iso){
   if(!iso) return "stale";
   const s=(Date.now()-Date.parse(iso))/1000;
   return s<1800 ? "fresh" : (s<86400 ? "recent" : "stale");
+}
+// Human "in X" for a future timestamp (the scheduler's next run).
+function relFuture(iso){
+  const s=(Date.parse(iso)-Date.now())/1000;
+  if(s<=0) return t("sched_overdue");
+  const [n,u] = s<3600 ? [Math.ceil(s/60),"u_min"] : s<86400 ? [Math.floor(s/3600),"u_h"] : [Math.floor(s/86400),"u_d"];
+  return t("sched_in")+" "+n+" "+t(u);
 }
 
 async function jget(u){ const r=await fetch(u); if(!r.ok) throw new Error((await r.json()).detail||r.statusText); return r.json(); }
@@ -260,13 +292,37 @@ function applyStaticText(){
 }
 
 async function loadAll(){
-  const [summary, listings] = await Promise.all([jget("/api/summary"), jget("/api/listings")]);
-  SUMMARY = summary; LISTINGS = listings;
+  const [summary, listings, sched] = await Promise.all([
+    jget("/api/summary"), jget("/api/listings"), jget("/api/scheduler").catch(()=>null)]);
+  SUMMARY = summary; LISTINGS = listings; SCHED = sched;
   SELECTED = new Set([...SELECTED].filter(id => LISTINGS.some(l=>l.id===id)));
   REFRESH_STATUS = new Map();   // stale after any reload; doRefresh re-sets its own
   renderAll();
 }
-function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); }
+function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); renderScheduler(); }
+
+// The scheduler heartbeat pill (dot colour = health). Kept live by a timer so it
+// reflects a background pass even when the user is idle — makes autostart trustworthy.
+function renderScheduler(){
+  const el=document.getElementById("schedStatus");
+  if(!el) return;
+  if(!SCHED || !SCHED.known){
+    el.innerHTML=`<span class="sdot off"></span>${t("sched_never")}`; el.title=""; return;
+  }
+  const err = SCHED.last_status==="error";
+  const overdue = SCHED.next_run_at && Date.parse(SCHED.next_run_at) < Date.now();
+  const cls = err ? "err" : (overdue ? "warn" : "ok");
+  const parts=[t("sched_run")+" "+relTime(SCHED.last_run_at)];
+  if(SCHED.next_run_at && !err) parts.push(relFuture(SCHED.next_run_at));
+  if(err) parts.push(t("sched_err"));
+  el.innerHTML=`<span class="sdot ${cls}"></span>${parts.join(" · ")}`;
+  const fmt = iso => iso ? new Date(iso).toLocaleString(t("date_locale")) : "—";
+  el.title=t("sched_title")(fmt(SCHED.last_run_at), fmt(SCHED.next_run_at),
+                            SCHED.last_events==null?"—":SCHED.last_events, SCHED.last_error);
+}
+async function loadScheduler(){
+  try{ SCHED = await jget("/api/scheduler"); renderScheduler(); }catch(e){}
+}
 
 function renderCards(){
   document.getElementById("cards").innerHTML = [
@@ -298,6 +354,7 @@ function renderTable(){
       <td><a href="${l.url}" target="_blank" rel="noopener">${label(l)}</a></td>
       <td class="num">${rub(l.current_price)}</td>
       <td class="num">${l.price_per_m2==null?'—':rub(l.price_per_m2)+"/"+t("unit_m2")}</td>
+      <td class="num">${targetCell(l)}</td>
       <td class="num ${dCls}">${pct(d)}</td>
       <td class="num">${l.days_since_change==null?'—':l.days_since_change+"d"}</td>
       <td><span class="fdot ${freshness(l.last_seen_at)}"></span>${relTime(l.last_seen_at)}${badge}</td>
@@ -306,10 +363,41 @@ function renderTable(){
     </tr>`;}).join("");
   document.getElementById("tableWrap").innerHTML =
     `<table><thead><tr><th>${t("th_source")}</th><th>${t("th_object")}</th><th class="num">${t("th_price")}</th>
-     <th class="num">${t("th_ppm2")}</th><th class="num">${t("th_delta")}</th><th class="num">${t("th_since")}</th>
+     <th class="num">${t("th_ppm2")}</th><th class="num">${t("th_target")}</th><th class="num">${t("th_delta")}</th><th class="num">${t("th_since")}</th>
      <th>${t("th_checked")}</th><th></th></tr></thead>
      <tbody>${rows}</tbody></table>`;
   document.querySelectorAll(".x").forEach(b=>b.onclick=()=>removeTracked(b.dataset, b));
+  document.querySelectorAll("[data-tgt]").forEach(el=>el.onclick=()=>
+    setTarget(+el.dataset.tgt, el.dataset.cur? +el.dataset.cur : null));
+}
+
+// The target cell: shows the set target + how far the current price is above it
+// (green when at/below), or a 🎯 button to set one. Editing uses a simple prompt.
+function targetCell(l){
+  if(l.target_price!=null){
+    const d=l.target_delta_pct;
+    const cls = d==null ? "" : (d<=0 ? "down" : "up");
+    const badge = d==null ? "" : `<span class="tbadge ${cls}">${d<=0?"✓ ":""}${pct(d)}</span>`;
+    return `<span class="tgt" data-tgt="${l.id}" data-cur="${l.target_price}" title="${t("target_edit")}">${rub(l.target_price)}${badge}</span>`;
+  }
+  return `<button class="tset" data-tgt="${l.id}" title="${t("target_set")}">🎯</button>`;
+}
+
+async function setTarget(id, current){
+  const raw = prompt(t("target_prompt"), current!=null ? String(current) : "");
+  if(raw===null) return;                         // cancelled
+  const digits = raw.replace(/[^\d]/g,"");        // tolerate spaces / ₽ / separators
+  try{
+    if(digits===""){
+      const r=await fetch(`/api/listings/${id}/target`,{method:"DELETE"});
+      if(!r.ok) throw new Error();
+    } else {
+      const r=await fetch(`/api/listings/${id}/target`,{ method:"PUT",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify({target_price:parseInt(digits,10)})});
+      if(!r.ok) throw new Error();
+    }
+    await loadAll();
+  }catch(e){ alert(t("err_generic")(e.message||"")); }
 }
 
 function renderChips(){
@@ -515,6 +603,8 @@ document.getElementById("lang").onchange=e=>{ LANG=e.target.value; localStorage.
 
 applyStaticText();
 loadAll().catch(e=>document.getElementById("addMsg").textContent=t("load_error")(e.message));
+// Keep the scheduler pill live (relative times + background passes) while idle.
+setInterval(loadScheduler, 60000);
 </script>
 </body>
 </html>

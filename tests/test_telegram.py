@@ -49,6 +49,31 @@ def delisted() -> Event:
                  external_id="1", url=URL, note="my flat")
 
 
+def test_price_changed_shows_target_distance_above() -> None:
+    # Current price above the target -> "🎯 target … (N above)".
+    meta = ListingMeta(rooms=2, area_total=56.6, target_price=13_000_000)
+    text = N(format_price_changed(price_changed(), meta))
+    assert "🎯" in text and "13 000 000" in text and "выше" in text
+
+
+def test_price_changed_shows_target_reached_when_below() -> None:
+    # New price at/below the target -> "✅ below target".
+    meta = ListingMeta(target_price=15_000_000)
+    text = N(format_price_changed(price_changed(), meta))  # new_price 14_000_000
+    assert "✅" in text and "15 000 000" in text
+
+
+def test_no_target_line_when_target_unset() -> None:
+    text = format_price_changed(price_changed(), ListingMeta(area_total=56.6))
+    assert "🎯" not in text and "✅" not in text
+
+
+def test_now_tracking_includes_target_line() -> None:
+    meta = ListingMeta(area_total=50.0, target_price=10_000_000)
+    text = N(format_now_tracking(now_tracking(14_800_000), meta))
+    assert "🎯" in text and "10 000 000" in text
+
+
 class FakeTransport:
     """Per-recipient transport (chat_id, text). Records what it is asked to send.
 

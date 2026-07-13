@@ -36,7 +36,8 @@ def make_meta_lookup(conn: sqlite3.Connection) -> MetaLookup:
         if row is None:
             return None
         return ListingMeta(rooms=row["rooms"], area_total=row["area_total"],
-                           title=row["title"], address=row["address"])
+                           title=row["title"], address=row["address"],
+                           target_price=repo.get_target(conn, listing_id))
 
     return get_meta
 

@@ -75,6 +75,10 @@ class Settings:
     # Notifications: also push a Telegram message on a newly-tracked listing
     # (NOW_TRACKING), not only on price changes/delistings.
     notify_on_new: bool
+    # Scheduler-in-serve (Decision A): when `serve` runs, also run the CIAN
+    # scheduler on a background thread, so one autostarted process gives both the
+    # dashboard and periodic scraping. Set 0 to serve the dashboard only.
+    scheduler_in_serve: bool
     # Browser hygiene (§7): drive a real, less-detectable browser for hostile
     # anti-bot (e.g. Avito). headless=False + channel='chrome' + a persistent
     # user-data dir (cookies) present as an ordinary browser; not evasion.
@@ -132,6 +136,7 @@ def load_settings() -> Settings:
         cian_headless=_get_bool("CIAN_HEADLESS", True),
         avito_grab_load_time=_get_int("AVITO_GRAB_LOAD_TIME", 40),
         notify_on_new=_get_bool("NOTIFY_ON_NEW", True),
+        scheduler_in_serve=_get_bool("SCHEDULER_IN_SERVE", True),
         browser_headless=_get_bool("BROWSER_HEADLESS", True),
         browser_channel=_get_optional("BROWSER_CHANNEL"),
         browser_user_data_dir=_get_optional("BROWSER_USER_DATA_DIR"),

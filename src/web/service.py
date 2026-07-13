@@ -105,9 +105,17 @@ def _primary_source(conn: sqlite3.Connection, listing_id: int) -> sqlite3.Row | 
     ).fetchone()
 
 
+def target_delta_pct(current: int | None, target: int | None) -> float | None:
+    """Percent the current price sits ABOVE the target (negative = at/below it)."""
+    if current is None or not target:
+        return None
+    return round((current - target) / target * 100, 1)
+
+
 def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]:
     """All discovered objects with their computed display fields (§9a)."""
     now = now or _now_iso()
+    targets = repo.get_all_targets(conn)
     out: list[dict] = []
     for listing in repo.list_listings(conn):
         obs = _observations(conn, listing["id"])
@@ -115,6 +123,7 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
         current = obs[-1]["price"] if obs else None
         low, high = min_max(obs)
         src = _primary_source(conn, listing["id"])
+        target = targets.get(listing["id"])
         out.append({
             "id": listing["id"],
             "source": listing["source"],
@@ -139,6 +148,8 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
             "change_count": change_count(obs),
             "first_seen_at": listing["first_seen_at"],
             "last_seen_at": listing["last_seen_at"],
+            "target_price": target,
+            "target_delta_pct": target_delta_pct(current, target),
         })
     return out
 
@@ -168,6 +179,28 @@ def summary(conn: sqlite3.Connection, now: str | None = None) -> dict:
         "active": int(active),
         "delisted": int(total) - int(active),
         "changes_7d": max(0, int(rows_in_window) - int(firsts_in_window)),
+    }
+
+
+def scheduler_status(conn: sqlite3.Connection) -> dict:
+    """The background scheduler's heartbeat for the dashboard status indicator.
+
+    Reads the ``app_meta`` keys the scheduler writes each pass (§9a). ``known`` is
+    False when no pass has run yet (fresh DB, or the scheduler is disabled and
+    nothing else has written a heartbeat) — the client shows a neutral dot then.
+    """
+    from src import scheduler as sched
+
+    meta = repo.get_all_meta(conn)
+    last_run = meta.get(sched.LAST_RUN_AT)
+    events = meta.get(sched.LAST_EVENTS)
+    return {
+        "known": last_run is not None,
+        "last_run_at": last_run,
+        "next_run_at": meta.get(sched.NEXT_RUN_AT),
+        "last_status": meta.get(sched.LAST_STATUS),
+        "last_error": meta.get(sched.LAST_ERROR) or None,
+        "last_events": int(events) if events is not None else None,
     }
 
 

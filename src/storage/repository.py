@@ -329,6 +329,66 @@ def mark_notification_attempt(
     conn.commit()
 
 
+# --------------------------------------------------------------------------- #
+# app_meta: small key/value store for operational state (scheduler heartbeat)
+# --------------------------------------------------------------------------- #
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Upsert one ``app_meta`` key. Values are stored as text (§12: edges only)."""
+    conn.execute(
+        "INSERT INTO app_meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()
+
+
+def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    """Read one ``app_meta`` value, or ``None`` if the key is unset."""
+    row = conn.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row is not None else None
+
+
+def get_all_meta(conn: sqlite3.Connection) -> dict[str, str]:
+    """Read the whole ``app_meta`` store as a plain dict (small; a handful of keys)."""
+    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM app_meta")}
+
+
+# --------------------------------------------------------------------------- #
+# listing_targets: a user-set price target per listing (notification context)
+# --------------------------------------------------------------------------- #
+def set_target(conn: sqlite3.Connection, listing_id: int, target_price: int,
+               created_at: str) -> None:
+    """Set (or replace) the price target for a listing. Money is integer rubles."""
+    conn.execute(
+        "INSERT INTO listing_targets (listing_id, target_price, created_at) "
+        "VALUES (?, ?, ?) "
+        "ON CONFLICT (listing_id) DO UPDATE SET "
+        "    target_price = excluded.target_price, created_at = excluded.created_at",
+        (listing_id, int(target_price), created_at),
+    )
+    conn.commit()
+
+
+def clear_target(conn: sqlite3.Connection, listing_id: int) -> None:
+    """Remove a listing's price target (no-op if none is set)."""
+    conn.execute("DELETE FROM listing_targets WHERE listing_id = ?", (listing_id,))
+    conn.commit()
+
+
+def get_target(conn: sqlite3.Connection, listing_id: int) -> int | None:
+    """Return a listing's target price in rubles, or ``None`` if unset."""
+    row = conn.execute(
+        "SELECT target_price FROM listing_targets WHERE listing_id = ?", (listing_id,)
+    ).fetchone()
+    return int(row["target_price"]) if row is not None else None
+
+
+def get_all_targets(conn: sqlite3.Connection) -> dict[int, int]:
+    """All targets as ``{listing_id: target_price}`` (for the dashboard read-model)."""
+    return {int(r["listing_id"]): int(r["target_price"])
+            for r in conn.execute("SELECT listing_id, target_price FROM listing_targets")}
+
+
 def delete_tracked_source(conn: sqlite3.Connection, tracked_id: int) -> None:
     """Hard-delete a tracked source and its source-listing links.
 
