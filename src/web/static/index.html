@@ -61,6 +61,10 @@
           border-radius:6px; padding:2px 6px; font-size:13px; }
   .tset:hover { border-color:var(--accent); color:var(--accent); }
   .x { color:var(--muted); cursor:pointer; border:none; background:none; font-size:16px; }
+  .lk { color:var(--muted); cursor:pointer; border:none; background:none; font-size:14px; opacity:.55; }
+  .lk.on { opacity:1; }
+  .lk.arm { opacity:1; outline:2px solid var(--accent); border-radius:6px; }
+  .plink { font-size:11px; color:var(--muted); white-space:nowrap; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
   .chip { font-size:12px; padding:4px 8px; border-radius:20px; border:1px solid var(--line);
           cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px; }
@@ -202,6 +206,13 @@ const I18N = {
     map_select:"Выберите объекты выше — они появятся на карте.",
     map_missing:n=>`Без координат: ${n} — заполнится после следующей проверки.`,
     map_target:"Цель",
+    link_start:"Связать с этим же объектом на другом сайте",
+    link_arm:"Теперь нажмите 🔗 у второго объявления (повторный клик — отмена).",
+    link_finish:"Связать с этим объявлением",
+    link_unlink:"Связано с парным объявлением — нажмите, чтобы разорвать связь",
+    link_unlink_confirm:"Разорвать связь с парным объявлением?",
+    link_done:"Объявления связаны.",
+    link_removed:"Связь разорвана.",
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -244,6 +255,13 @@ const I18N = {
     map_select:"Select objects above to see them on the map.",
     map_missing:n=>`${n} without coordinates yet — fills in after the next check.`,
     map_target:"Target",
+    link_start:"Link with the same flat on another site",
+    link_arm:"Now click 🔗 on the second listing (click again to cancel).",
+    link_finish:"Link with this listing",
+    link_unlink:"Linked to a partner listing — click to unlink",
+    link_unlink_confirm:"Unlink from the partner listing?",
+    link_done:"Listings linked.",
+    link_removed:"Link removed.",
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -253,6 +271,7 @@ const rub = n => (n==null ? "—" : new Intl.NumberFormat("ru-RU").format(Math.r
 const pct = n => (n==null ? "—" : (n>0?"+":"") + n.toFixed(1) + "%");
 const PALETTE = ["#3b6ef5","#1f9e5f","#d64545","#e0a020","#9b51e0","#0aa3b5","#e0713b","#5a6485"];
 let LISTINGS = [], SUMMARY = {total:0,active:0,delisted:0,changes_7d:0}, SELECTED = new Set(), HIST = {}, chart = null;
+let LINKING = null;   // listing id whose 🔗 was clicked first (link mode), or null
 let SCHED = null;   // background-scheduler heartbeat from /api/scheduler
 // Per-refresh outcome per listing id: {k:'changed'|'same'|'unchecked'}. Set by
 // doRefresh, shown as row badges until the next refresh/add/remove.
@@ -326,6 +345,7 @@ async function loadAll(){
   SUMMARY = summary; LISTINGS = listings; SCHED = sched;
   SELECTED = new Set([...SELECTED].filter(id => LISTINGS.some(l=>l.id===id)));
   REFRESH_STATUS = new Map();   // stale after any reload; doRefresh re-sets its own
+  LINKING = null;               // any reload leaves link mode
   renderAll();
 }
 function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); renderScheduler(); }
@@ -381,13 +401,13 @@ function renderTable(){
     return `<tr class="${l.status==='delisted'?'delisted ':''}${st&&st.k==='changed'?'changed':''}">
       <td><span class="badge">${l.source}</span></td>
       <td><a href="${l.url}" target="_blank" rel="noopener">${label(l)}</a></td>
-      <td class="num">${rub(l.current_price)}</td>
+      <td class="num">${rub(l.current_price)}${partnerLines(l)}</td>
       <td class="num">${l.price_per_m2==null?'—':rub(l.price_per_m2)+"/"+t("unit_m2")}</td>
       <td class="num">${targetCell(l)}</td>
       <td class="num ${dCls}">${pct(d)}</td>
       <td class="num">${l.days_since_change==null?'—':l.days_since_change+"d"}</td>
       <td><span class="fdot ${freshness(l.last_seen_at)}"></span>${relTime(l.last_seen_at)}${badge}</td>
-      <td class="num">${l.tracked_source_id!=null
+      <td class="num" style="white-space:nowrap">${linkBtn(l)}${l.tracked_source_id!=null
         ? `<button class="x" title="×" data-src="${l.tracked_source_id}" data-kind="${l.tracked_source_kind}" data-note="${(l.note||'').replace(/"/g,'&quot;')}">×</button>` : ''}</td>
     </tr>`;}).join("");
   document.getElementById("tableWrap").innerHTML =
@@ -398,6 +418,52 @@ function renderTable(){
   document.querySelectorAll(".x").forEach(b=>b.onclick=()=>removeTracked(b.dataset, b));
   document.querySelectorAll("[data-tgt]").forEach(el=>el.onclick=()=>
     setTarget(+el.dataset.tgt, el.dataset.cur? +el.dataset.cur : null));
+  document.querySelectorAll(".lk").forEach(b=>b.onclick=()=>linkClick(+b.dataset.lk));
+}
+
+// The partner price line(s) under a linked row's price: 'avito: 7 350 000 ₽ (−45 000 ₽)'.
+// Negative diff = the partner is cheaper (good for a buyer -> green).
+function partnerLines(l){
+  return (l.linked||[]).map(p=>{
+    const d=p.price_diff;
+    const diff = d==null||d===0 ? "" :
+      ` <span class="${d<0?'down':'up'}">(${(d>0?"+":"−")+new Intl.NumberFormat("ru-RU").format(Math.abs(d))} ₽)</span>`;
+    return `<div class="plink">🔗 ${p.source}: ${rub(p.current_price)}${diff}</div>`;
+  }).join("");
+}
+
+// The 🔗 button: linked -> click unlinks (confirm); unlinked -> first click arms
+// link mode, a click on another row's 🔗 completes the pair, same row cancels.
+function linkBtn(l){
+  const linked=(l.linked||[]).length>0;
+  const cls = "lk"+(linked?" on":"")+(LINKING===l.id?" arm":"");
+  const title = linked ? t("link_unlink")
+    : LINKING==null ? t("link_start")
+    : LINKING===l.id ? t("link_arm") : t("link_finish");
+  return `<button class="${cls}" data-lk="${l.id}" title="${title}">🔗</button>`;
+}
+
+async function linkClick(id){
+  const msg=document.getElementById("addMsg");
+  const l=LISTINGS.find(x=>x.id===id); if(!l) return;
+  try{
+    if((l.linked||[]).length){
+      if(LINKING==null){
+        if(!confirm(t("link_unlink_confirm"))) return;
+        const r=await fetch(`/api/listings/${id}/link`,{method:"DELETE"});
+        if(!r.ok) throw new Error();
+        LINKING=null; await loadAll(); msg.textContent=t("link_removed");
+        return;
+      }
+      // fall through: linking an already-linked row merges the groups
+    }
+    if(LINKING==null){ LINKING=id; renderTable(); msg.textContent=t("link_arm"); return; }
+    if(LINKING===id){ LINKING=null; renderTable(); msg.textContent=""; return; }
+    const r=await fetch(`/api/listings/${LINKING}/link`,{ method:"PUT",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({other_id:id})});
+    if(!r.ok) throw new Error((await r.json()).detail||"");
+    LINKING=null; await loadAll(); msg.textContent=t("link_done");
+  }catch(e){ LINKING=null; renderTable(); msg.textContent=t("err_generic")(e.message||""); }
 }
 
 // The target cell: shows the set target + how far the current price is above it

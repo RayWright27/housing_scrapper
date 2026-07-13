@@ -99,3 +99,18 @@ CREATE TABLE IF NOT EXISTS listing_targets (
     target_price INTEGER NOT NULL,          -- rubles, no decimals
     created_at   TEXT    NOT NULL           -- ISO-8601 UTC
 );
+
+-- User assertion that several listing rows are the SAME physical flat published
+-- on different sites (the CIAN/Avito double-listing case). User intent, like
+-- listing_targets: never written by scraping, never gates change detection —
+-- each row keeps its own price history; the dashboard only shows the linked
+-- partner's price next to a row for comparison. Membership model: every linked
+-- listing carries a group_id; a group with fewer than 2 members is meaningless
+-- and is cleaned up on unlink.
+CREATE TABLE IF NOT EXISTS listing_links (
+    listing_id INTEGER PRIMARY KEY REFERENCES listings (id),
+    group_id   INTEGER NOT NULL,
+    created_at TEXT    NOT NULL             -- ISO-8601 UTC
+);
+
+CREATE INDEX IF NOT EXISTS idx_listing_links_group ON listing_links (group_id);

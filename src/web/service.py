@@ -116,6 +116,7 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
     """All discovered objects with their computed display fields (§9a)."""
     now = now or _now_iso()
     targets = repo.get_all_targets(conn)
+    link_groups = repo.get_link_groups(conn)
     out: list[dict] = []
     for listing in repo.list_listings(conn):
         obs = _observations(conn, listing["id"])
@@ -152,8 +153,30 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
             "last_seen_at": listing["last_seen_at"],
             "target_price": target,
             "target_delta_pct": target_delta_pct(current, target),
+            "link_group": link_groups.get(listing["id"]),
         })
+    _attach_link_partners(out)
     return out
+
+
+def _attach_link_partners(rows: list[dict]) -> None:
+    """Add ``linked``: the other members of each row's link group, with the
+    price gap (partner − this row) so the dashboard can show which site is
+    cheaper. Second pass over already-computed rows — no extra DB reads."""
+    by_group: dict[int, list[dict]] = {}
+    for row in rows:
+        if row["link_group"] is not None:
+            by_group.setdefault(row["link_group"], []).append(row)
+    for row in rows:
+        partners = [p for p in by_group.get(row["link_group"], []) if p is not row]
+        row["linked"] = [{
+            "id": p["id"],
+            "source": p["source"],
+            "current_price": p["current_price"],
+            "price_diff": (p["current_price"] - row["current_price"]
+                           if p["current_price"] is not None
+                           and row["current_price"] is not None else None),
+        } for p in partners]
 
 
 def summary(conn: sqlite3.Connection, now: str | None = None) -> dict:

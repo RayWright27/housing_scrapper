@@ -395,6 +395,76 @@ def get_all_targets(conn: sqlite3.Connection) -> dict[int, int]:
             for r in conn.execute("SELECT listing_id, target_price FROM listing_targets")}
 
 
+# --------------------------------------------------------------------------- #
+# listing_links: user assertion "these rows are the same flat on different sites"
+# --------------------------------------------------------------------------- #
+def link_listings(conn: sqlite3.Connection, listing_id_a: int, listing_id_b: int,
+                  created_at: str) -> int:
+    """Put two listings in the same link group; return the group id.
+
+    If either listing already belongs to a group the other joins it (and two
+    existing groups are merged), so "link A to B" always converges to one group
+    per physical flat. Linking a listing to itself is a no-op error.
+    """
+    if listing_id_a == listing_id_b:
+        raise ValueError("cannot link a listing to itself")
+    groups = get_link_groups(conn)
+    group_a = groups.get(listing_id_a)
+    group_b = groups.get(listing_id_b)
+    if group_a is not None and group_b is not None:
+        if group_a != group_b:  # merge b's group into a's
+            conn.execute(
+                "UPDATE listing_links SET group_id = ? WHERE group_id = ?",
+                (group_a, group_b),
+            )
+        group = group_a
+    else:
+        group = group_a if group_a is not None else group_b
+        if group is None:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(group_id), 0) + 1 AS g FROM listing_links"
+            ).fetchone()
+            group = int(row["g"])
+    for lid in (listing_id_a, listing_id_b):
+        conn.execute(
+            "INSERT INTO listing_links (listing_id, group_id, created_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT (listing_id) DO UPDATE SET group_id = excluded.group_id",
+            (lid, group, created_at),
+        )
+    conn.commit()
+    return group
+
+
+def unlink_listing(conn: sqlite3.Connection, listing_id: int) -> None:
+    """Remove a listing from its link group (no-op if unlinked).
+
+    A group left with a single member is dissolved — a "group" of one listing
+    asserts nothing.
+    """
+    row = conn.execute(
+        "SELECT group_id FROM listing_links WHERE listing_id = ?", (listing_id,)
+    ).fetchone()
+    if row is None:
+        return
+    conn.execute("DELETE FROM listing_links WHERE listing_id = ?", (listing_id,))
+    remaining = conn.execute(
+        "SELECT COUNT(*) AS c FROM listing_links WHERE group_id = ?",
+        (row["group_id"],),
+    ).fetchone()
+    if int(remaining["c"]) < 2:
+        conn.execute(
+            "DELETE FROM listing_links WHERE group_id = ?", (row["group_id"],)
+        )
+    conn.commit()
+
+
+def get_link_groups(conn: sqlite3.Connection) -> dict[int, int]:
+    """All link memberships as ``{listing_id: group_id}``."""
+    return {int(r["listing_id"]): int(r["group_id"])
+            for r in conn.execute("SELECT listing_id, group_id FROM listing_links")}
+
+
 def delete_tracked_source(conn: sqlite3.Connection, tracked_id: int) -> None:
     """Hard-delete a tracked source and its source-listing links.
 

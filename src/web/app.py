@@ -56,6 +56,10 @@ class TargetBody(BaseModel):
     target_price: int
 
 
+class LinkBody(BaseModel):
+    other_id: int
+
+
 def _no_notify(conn, events) -> None:
     """Default notify seam: do nothing (used by offline tests)."""
 
@@ -193,6 +197,25 @@ def create_app(
         with get_conn() as conn:
             repo.clear_target(conn, listing_id)
         return {"listing_id": listing_id, "target_price": None}
+
+    @app.put("/api/listings/{listing_id}/link")
+    def api_link(listing_id: int, body: LinkBody) -> dict:
+        """Assert that two rows are the same physical flat on different sites.
+        Display context only: each row keeps its own price history."""
+        if listing_id == body.other_id:
+            raise HTTPException(status_code=400, detail="cannot link a listing to itself")
+        with get_conn() as conn:
+            for lid in (listing_id, body.other_id):
+                if repo.get_listing(conn, lid) is None:
+                    raise HTTPException(status_code=404, detail=f"listing {lid} not found")
+            group = repo.link_listings(conn, listing_id, body.other_id, service._now_iso())
+        return {"listing_id": listing_id, "other_id": body.other_id, "group": group}
+
+    @app.delete("/api/listings/{listing_id}/link")
+    def api_unlink(listing_id: int) -> dict:
+        with get_conn() as conn:
+            repo.unlink_listing(conn, listing_id)
+        return {"listing_id": listing_id, "group": None}
 
     @app.delete("/api/tracked/{tracked_id}")
     def api_remove(tracked_id: int) -> dict:

@@ -176,6 +176,61 @@ def test_upsert_with_coords_updates_position(conn: sqlite3.Connection) -> None:
     assert row["lon"] == 30.32
 
 
+def _listing(conn, ext: str) -> int:
+    return repo.upsert_listing(conn, source="cian", external_id=ext, url="u", now=NOW)
+
+
+def test_link_listings_share_one_group(conn: sqlite3.Connection) -> None:
+    a, b = _listing(conn, "a"), _listing(conn, "b")
+    group = repo.link_listings(conn, a, b, NOW)
+    assert repo.get_link_groups(conn) == {a: group, b: group}
+
+
+def test_link_to_self_raises(conn: sqlite3.Connection) -> None:
+    a = _listing(conn, "a")
+    with pytest.raises(ValueError):
+        repo.link_listings(conn, a, a, NOW)
+
+
+def test_link_merges_existing_groups(conn: sqlite3.Connection) -> None:
+    a, b, c, d = (_listing(conn, x) for x in "abcd")
+    repo.link_listings(conn, a, b, NOW)
+    repo.link_listings(conn, c, d, NOW)
+    repo.link_listings(conn, b, c, NOW)   # bridges the two groups
+    groups = repo.get_link_groups(conn)
+    assert len({groups[a], groups[b], groups[c], groups[d]}) == 1
+
+
+def test_link_joins_existing_group(conn: sqlite3.Connection) -> None:
+    a, b, c = (_listing(conn, x) for x in "abc")
+    group = repo.link_listings(conn, a, b, NOW)
+    assert repo.link_listings(conn, c, a, NOW) == group
+    assert repo.get_link_groups(conn)[c] == group
+
+
+def test_unlink_dissolves_pair(conn: sqlite3.Connection) -> None:
+    a, b = _listing(conn, "a"), _listing(conn, "b")
+    repo.link_listings(conn, a, b, NOW)
+    repo.unlink_listing(conn, a)
+    # a "group" of one asserts nothing -> b is released too
+    assert repo.get_link_groups(conn) == {}
+
+
+def test_unlink_keeps_remaining_pair(conn: sqlite3.Connection) -> None:
+    a, b, c = (_listing(conn, x) for x in "abc")
+    repo.link_listings(conn, a, b, NOW)
+    repo.link_listings(conn, c, a, NOW)
+    repo.unlink_listing(conn, a)
+    groups = repo.get_link_groups(conn)
+    assert set(groups) == {b, c} and groups[b] == groups[c]
+
+
+def test_unlink_unlinked_is_noop(conn: sqlite3.Connection) -> None:
+    a = _listing(conn, "a")
+    repo.unlink_listing(conn, a)   # must not raise
+    assert repo.get_link_groups(conn) == {}
+
+
 def test_migration_adds_lat_lon_to_existing_listings_table() -> None:
     # A DB created before the map feature has `listings` without lat/lon;
     # bootstrap must ALTER it in place (durable rows are kept, values NULL).

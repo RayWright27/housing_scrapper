@@ -107,9 +107,12 @@ realty-tracker/
 Three core tables (below), plus operational tables — `source_listings`
 (source↔listing links + the consecutive-miss counter that drives delisting,
 §8.7), `pending_notifications` (the Telegram outbox, §9b), `app_meta` (a small
-key/value store for the scheduler heartbeat + last-backup timestamp) and
+key/value store for the scheduler heartbeat + last-backup timestamp),
 `listing_targets` (a user-set price target per listing — display context for
-notifications and the dashboard, never a change-detection input). Treat
+notifications and the dashboard, never a change-detection input) and
+`listing_links` (a user assertion that several rows are the SAME physical flat
+published on different sites — each row keeps its own history; the dashboard
+only shows the partner's price next to a row for comparison). Treat
 `schema.sql` as the single source of truth for DDL.
 
 **`tracked_sources`** — the fixed list of things to watch.
@@ -333,6 +336,11 @@ API shape (keep it this simple):
   price target (rubles). `DELETE` clears it. A target is display CONTEXT only —
   it enriches the price-change notification and the dashboard row with
   distance-to-target; it does NOT gate change detection or which events notify.
+- `PUT /api/listings/{id}/link` — body `{other_id}`; assert the two rows are the
+  same physical flat on different sites (the CIAN/Avito double-listing case).
+  `DELETE` unlinks. Display context only: each row keeps its own price history;
+  the row gains the partner's current price + gap. Linking rows that already
+  belong to groups merges the groups; a group left with one member dissolves.
 - `DELETE /api/tracked/{id}` — deactivate (set `active=0`); never hard-delete
   history.
 - `POST /api/refresh` — run one CIAN pass now (like `run-once`) and notify on

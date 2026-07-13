@@ -246,6 +246,48 @@ def test_target_reaches_notifier_via_meta_lookup(conn) -> None:
     assert meta is not None and meta.target_price == 12_000_000
 
 
+def test_listing_rows_carry_link_partners(conn) -> None:
+    a = _seed(conn, "A", 50.0, [(10_000_000, NOW)])
+    b = repo.upsert_listing(conn, source="avito", external_id="B",
+                            url="https://avito.ru/b", now=NOW)
+    repo.record_price(conn, b, 9_800_000, NOW)
+    repo.link_listings(conn, a, b, NOW)
+
+    rows = {r["id"]: r for r in service.listing_rows(conn, now=NOW)}
+    assert rows[a]["link_group"] == rows[b]["link_group"] is not None
+    assert rows[a]["linked"] == [{"id": b, "source": "avito",
+                                  "current_price": 9_800_000,
+                                  "price_diff": -200_000}]   # partner is cheaper
+    assert rows[b]["linked"][0]["price_diff"] == 200_000
+    # unlinked listings expose an empty list, not a missing key
+    c = _seed(conn, "C", 50.0, [(1, NOW)])
+    rows = {r["id"]: r for r in service.listing_rows(conn, now=NOW)}
+    assert rows[c]["linked"] == [] and rows[c]["link_group"] is None
+
+
+def test_link_endpoints(conn) -> None:
+    client = _client(conn)
+    client.post("/api/tracked", json={"url": "https://spb.cian.ru/sale/flat/777/"})
+    a = client.get("/api/listings").json()[0]["id"]
+    b = repo.upsert_listing(conn, source="avito", external_id="B",
+                            url="https://avito.ru/b", now=NOW)
+
+    assert client.put(f"/api/listings/{a}/link",
+                      json={"other_id": b}).status_code == 200
+    rows = {r["id"]: r for r in client.get("/api/listings").json()}
+    assert rows[a]["linked"][0]["id"] == b
+
+    # self-link and unknown ids are rejected
+    assert client.put(f"/api/listings/{a}/link",
+                      json={"other_id": a}).status_code == 400
+    assert client.put(f"/api/listings/{a}/link",
+                      json={"other_id": 9999}).status_code == 404
+
+    assert client.delete(f"/api/listings/{a}/link").status_code == 200
+    rows = {r["id"]: r for r in client.get("/api/listings").json()}
+    assert rows[a]["linked"] == [] and rows[b]["linked"] == []
+
+
 def test_post_unknown_host_is_400(conn) -> None:
     r = _client(conn).post("/api/tracked", json={"url": "https://example.com/x"})
     assert r.status_code == 400
