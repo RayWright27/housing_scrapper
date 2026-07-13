@@ -74,3 +74,10 @@ def notify_events(conn: sqlite3.Connection, events, settings) -> None:
     TelegramNotifier.from_settings(settings, outbox=make_outbox(conn)).notify(
         events, make_meta_lookup(conn)
     )
+
+
+def notify_text(conn: sqlite3.Connection, text: str, settings) -> None:
+    """Deliver one operational (non-event) message with the same outbox
+    semantics as :func:`notify_events` — used for the scheduler's stale-tracker
+    warning. A no-op when Telegram is unconfigured. Never raises."""
+    TelegramNotifier.from_settings(settings, outbox=make_outbox(conn)).send_text(text)

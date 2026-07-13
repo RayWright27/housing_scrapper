@@ -329,6 +329,25 @@ class TelegramNotifier:
                     online = False  # transient: connection just dropped
                 self._queue(chat_id, text)
 
+    def send_text(self, text: str) -> None:
+        """Deliver one already-rendered operational message (e.g. the scheduler's
+        stale-tracker warning) to every recipient. Never raises.
+
+        Same delivery semantics as :meth:`notify`: backlog is flushed first, a
+        transient failure queues the (recipient, message) pair in the outbox, a
+        permanent rejection is logged and skipped."""
+        if not self.enabled:
+            logger.info("telegram disabled (no token/chat id) — skipping message")
+            return
+        online = self._flush_pending()
+        for chat_id in self._recipients:
+            if online:
+                status = self._deliver(chat_id, text)
+                if status in ("ok", "permanent"):
+                    continue
+                online = False  # transient: connection just dropped
+            self._queue(chat_id, text)
+
     def _flush_pending(self) -> bool:
         """Replay queued messages oldest-first. Return False if Telegram is
         unreachable (so the caller stops attempting new sends this pass).

@@ -208,6 +208,14 @@ def _cian_pass(conn, settings) -> list:
     return events
 
 
+def _health_warn(conn, text: str) -> None:
+    """The scheduler's warn seam: one operational Telegram message (outboxed)."""
+    from config import settings
+    from src.notify import sink
+
+    sink.notify_text(conn, text, settings)
+
+
 def cmd_run_once(args: argparse.Namespace) -> int:
     from config import settings
 
@@ -243,7 +251,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     interval_h = max(1, settings.poll_interval_hours)
     print(f"scheduler: CIAN pass now, then every {interval_h}h  (Ctrl+C to stop)")
     try:
-        run_scheduler(_cian_pass, settings, conn_factory=_open_db)
+        run_scheduler(_cian_pass, settings, conn_factory=_open_db,
+                      warn_fn=_health_warn)
     except KeyboardInterrupt:
         print("\nscheduler stopped")
     return 0
@@ -560,7 +569,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         # Decision A: one autostarted process serves the dashboard AND runs the
         # CIAN scheduler on a background thread (which also takes the startup
         # backup, due-based). Set SCHEDULER_IN_SERVE=0 to serve the dashboard only.
-        scheduler.start_background(_cian_pass, settings, conn_factory=_open_db)
+        scheduler.start_background(_cian_pass, settings, conn_factory=_open_db,
+                                   warn_fn=_health_warn)
         sched_note = f" · scheduler every {max(1, settings.poll_interval_hours)}h"
     else:
         scheduler.startup_backup(_open_db, settings)  # dashboard-only: still snapshot

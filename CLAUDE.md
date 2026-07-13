@@ -361,6 +361,13 @@ send a short message (old → new, delta, percent, link). It does not serve the
 history UI; the dashboard does. Telegram stays optional — if no token is
 configured, the system runs dashboard-only without error.
 
+Besides listing events, Telegram carries one **operational warning**: when the
+scheduler's passes keep failing and the last *successful* pass is older than 2×
+the poll interval, it pings "the tracker has gone stale" (at most once per 24h),
+so silent data rot is noticed without watching the dashboard. The scheduler
+sends it through an injected warn seam (`sink.notify_text`), keeping the
+scheduler Telegram-free.
+
 Delivery is best-effort but does not lose messages: a failed send (Telegram
 unreachable) is stored in the `pending_notifications` outbox and replayed,
 oldest first, at the start of the next `notify` (i.e. the next run-once / grab /

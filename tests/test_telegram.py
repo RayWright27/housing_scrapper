@@ -216,6 +216,32 @@ def test_relevant_events_are_sent_with_formatted_text() -> None:
     assert "Цена изменилась" in transport.sent[0][1]
 
 
+def test_send_text_delivers_to_every_recipient() -> None:
+    transport = FakeTransport()
+    _notifier(transport, chat_ids=["1", "2"]).send_text("⚠️ warning")
+    assert transport.sent == [("1", "⚠️ warning"), ("2", "⚠️ warning")]
+
+
+def test_send_text_disabled_is_noop() -> None:
+    transport = FakeTransport()
+    TelegramNotifier(None, None, transport=transport).send_text("x")  # must not raise
+    assert transport.sent == []
+
+
+def test_send_text_transient_failure_goes_to_outbox() -> None:
+    transport = FakeTransport(fail=True)
+    outbox = FakeOutbox()
+    _notifier(transport, chat_ids=["1", "2"], outbox=outbox).send_text("warn")
+    assert transport.sent == []
+    assert [(m.chat_id, m.text) for m in outbox.pending()] == [("1", "warn"), ("2", "warn")]
+
+    # connectivity back: the queued warning is replayed on the next send_text
+    transport.fail = False
+    _notifier(transport, chat_ids=["1", "2"], outbox=outbox).send_text("second")
+    assert ("1", "warn") in transport.sent and ("2", "warn") in transport.sent
+    assert outbox.pending() == []
+
+
 def test_now_tracking_suppressed_when_notify_on_new_false() -> None:
     transport = FakeTransport()
     _notifier(transport, notify_on_new=False).notify(

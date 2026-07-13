@@ -73,6 +73,101 @@ def test_record_pass_result_writes_heartbeat() -> None:
     conn.close()
 
 
+def test_record_pass_result_tracks_last_success() -> None:
+    conn = init_db(":memory:")
+    scheduler.record_pass_result(conn, [], status="ok", error="",
+                                 next_run_at="n", now="2026-07-01T00:00:00+00:00")
+    assert repo.get_meta(conn, scheduler.LAST_SUCCESS_AT) == "2026-07-01T00:00:00+00:00"
+    # a failing pass advances the heartbeat but NOT the last success
+    scheduler.record_pass_result(conn, [], status="error", error="Boom",
+                                 next_run_at="n", now="2026-07-02T00:00:00+00:00")
+    assert repo.get_meta(conn, scheduler.LAST_SUCCESS_AT) == "2026-07-01T00:00:00+00:00"
+    conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# stale-tracker health warning
+# --------------------------------------------------------------------------- #
+def _at(iso: str) -> datetime:
+    return datetime.fromisoformat(iso)
+
+
+def test_check_health_quiet_when_fresh_or_never_succeeded() -> None:
+    conn = init_db(":memory:")
+    settings = _settings(":memory:")           # interval 6h -> stale at 12h
+    warnings: list[str] = []
+    warn = lambda _c, text: warnings.append(text)  # noqa: E731
+
+    # never succeeded (fresh DB): nothing to compare against
+    assert scheduler.check_health(conn, settings, warn=warn,
+                                  now=_at("2026-07-01T00:00:00+00:00")) is False
+    # recent success: healthy
+    repo.set_meta(conn, scheduler.LAST_SUCCESS_AT, "2026-07-01T00:00:00+00:00")
+    assert scheduler.check_health(conn, settings, warn=warn,
+                                  now=_at("2026-07-01T06:00:00+00:00")) is False
+    assert warnings == []
+    conn.close()
+
+
+def test_check_health_warns_once_per_cooldown() -> None:
+    conn = init_db(":memory:")
+    settings = _settings(":memory:")
+    warnings: list[str] = []
+    warn = lambda _c, text: warnings.append(text)  # noqa: E731
+    repo.set_meta(conn, scheduler.LAST_SUCCESS_AT, "2026-07-01T00:00:00+00:00")
+    repo.set_meta(conn, scheduler.LAST_ERROR, "SiteBlocked")
+
+    # 13h without a success (> 2 × 6h) -> warn, carrying the last error type
+    assert scheduler.check_health(conn, settings, warn=warn,
+                                  now=_at("2026-07-01T13:00:00+00:00")) is True
+    assert len(warnings) == 1
+    assert "13 ч" in warnings[0] and "SiteBlocked" in warnings[0]
+
+    # still stale 2h later, but inside the 24h cooldown -> silent
+    assert scheduler.check_health(conn, settings, warn=warn,
+                                  now=_at("2026-07-01T15:00:00+00:00")) is False
+    # past the cooldown -> warns again, now with a day-scale age
+    assert scheduler.check_health(conn, settings, warn=warn,
+                                  now=_at("2026-07-03T14:00:00+00:00")) is True
+    assert len(warnings) == 2 and "2 дн" in warnings[1]
+    conn.close()
+
+
+def test_check_health_survives_a_failing_warn_seam() -> None:
+    conn = init_db(":memory:")
+    settings = _settings(":memory:")
+    repo.set_meta(conn, scheduler.LAST_SUCCESS_AT, "2026-07-01T00:00:00+00:00")
+
+    def boom(_c, _text):
+        raise RuntimeError("telegram module blew up")
+
+    # never raises; the failed ping is not recorded, so the next check retries
+    assert scheduler.check_health(conn, settings, warn=boom,
+                                  now=_at("2026-07-02T00:00:00+00:00")) is False
+    assert repo.get_meta(conn, scheduler.HEALTH_WARNED_AT) is None
+    conn.close()
+
+
+def test_failing_loop_pass_triggers_health_check(tmp_path) -> None:
+    db_file = tmp_path / "tracker.db"
+    conn = init_db(str(db_file))
+    # a success far in the past, so the failing pass finds the tracker stale
+    repo.set_meta(conn, scheduler.LAST_SUCCESS_AT, "2020-01-01T00:00:00+00:00")
+    conn.close()
+    settings = _settings(str(db_file))
+    stop = threading.Event()
+    warnings: list[str] = []
+
+    def boom(conn, _settings):
+        stop.set()
+        raise RuntimeError("scrape blew up")
+
+    scheduler.run_scheduler(boom, settings, conn_factory=_conn_factory(str(db_file)),
+                            stop_event=stop, on_startup_backup=False,
+                            warn_fn=lambda _c, text: warnings.append(text))
+    assert len(warnings) == 1 and "⚠️" in warnings[0]
+
+
 # --------------------------------------------------------------------------- #
 # daily (due-based) backup
 # --------------------------------------------------------------------------- #
