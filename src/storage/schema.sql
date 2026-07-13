@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS listings (
     area_kitchen   REAL,
     floor          INTEGER,
     floors_total   INTEGER,
+    lat            REAL,                    -- WGS-84, from the site's payload
+    lon            REAL,                    -- nullable until a fetch provides it
     first_seen_at  TEXT    NOT NULL,        -- ISO-8601 UTC
     last_seen_at   TEXT    NOT NULL,        -- ISO-8601 UTC
     is_active      INTEGER NOT NULL DEFAULT 1,

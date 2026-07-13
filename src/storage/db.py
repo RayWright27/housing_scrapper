@@ -46,16 +46,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ``pending_notifications`` gained a ``chat_id`` column (one row per recipient).
     A pre-existing table without it holds only transient, undelivered notices, so
     we drop it and let :func:`bootstrap` recreate it in the current shape — no
-    durable history is lost (the outbox is not history)."""
+    durable history is lost (the outbox is not history).
+
+    ``listings`` gained ``lat``/``lon``; a durable table, so it is ALTERed in
+    place instead of dropped."""
     row = conn.execute(
         "SELECT name FROM sqlite_master "
         "WHERE type = 'table' AND name = 'pending_notifications'"
     ).fetchone()
-    if row is None:
-        return
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_notifications)")}
-    if "chat_id" not in cols:
-        conn.execute("DROP TABLE pending_notifications")
+    if row is not None:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_notifications)")}
+        if "chat_id" not in cols:
+            conn.execute("DROP TABLE pending_notifications")
+
+    # ``listings`` gained lat/lon (map feature). Additive: existing rows keep
+    # NULL until their next successful fetch provides coordinates.
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'listings'"
+    ).fetchone()
+    if row is not None:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(listings)")}
+        if "lat" not in cols:
+            conn.execute("ALTER TABLE listings ADD COLUMN lat REAL")
+        if "lon" not in cols:
+            conn.execute("ALTER TABLE listings ADD COLUMN lon REAL")
 
 
 def bootstrap(conn: sqlite3.Connection) -> None:

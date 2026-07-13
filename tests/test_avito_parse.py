@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src.adapters.avito import (
     classify_page,
     classify_url,
@@ -53,6 +55,8 @@ def test_full_listing_maps_all_fields() -> None:
     assert raw.extra["area_living"] == 31.7  # from structured params -> extra
     assert raw.extra["area_kitchen"] == 5.7
     assert "Пушкин" in (raw.address or "")
+    assert raw.lat == pytest.approx(59.70500183)   # geo.coords -> map pin
+    assert raw.lon == pytest.approx(30.37329674)
     assert raw.extra["raw"]["id"] == 8223980209
 
 
@@ -63,6 +67,7 @@ def test_missing_optionals_become_none() -> None:
     assert raw.price == 7_395_000
     assert raw.rooms is None and raw.area_total is None
     assert raw.floor is None and raw.floors_total is None
+    assert raw.lat is None and raw.lon is None
     assert "area_living" not in raw.extra
 
 
@@ -107,6 +112,10 @@ def test_search_parses_items_with_price_and_url() -> None:
     assert first.rooms == 0                             # studio in title
     assert first.area_total == 20.4
     assert first.url.startswith("https://www.avito.ru/")  # built from urlPath
+    # SERP coords arrive as strings -> parsed to floats; absent ones stay None
+    assert first.lat == pytest.approx(60.01875)
+    assert first.lon == pytest.approx(30.47085)
+    assert items[1].lat is None and items[1].lon is None
     # every parsed item has a positive integer price and an id
     assert all(i.price > 0 and i.external_id for i in items)
 

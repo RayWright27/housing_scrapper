@@ -57,6 +57,8 @@ def test_full_listing_maps_all_fields() -> None:
     # living/kitchen land in extra (normalize reads them from there)
     assert raw.extra["area_living"] == pytest.approx(21.2)
     assert raw.extra["area_kitchen"] == pytest.approx(11.8)
+    assert raw.lat == pytest.approx(59.991714)   # geo.coordinates -> map pin
+    assert raw.lon == pytest.approx(29.766252)
     assert "raw" in raw.extra  # trimmed debug snapshot (#14)
 
 
@@ -74,8 +76,31 @@ def test_missing_optionals_become_none() -> None:
     assert raw.floor is None
     assert raw.floors_total is None
     assert raw.address is None
+    assert raw.lat is None and raw.lon is None
     assert "area_living" not in raw.extra
     assert "area_kitchen" not in raw.extra
+
+
+# --------------------------------------------------------------------------- #
+# Coordinates (map feature): both-or-none, junk tolerated
+# --------------------------------------------------------------------------- #
+def test_half_or_junk_coordinates_become_none() -> None:
+    base = {"cianId": 30, "bargainTerms": {"price": 5_000_000, "currency": "rur"}}
+    for coords in ({"lat": 59.9}, {"lat": "abc", "lng": "def"},
+                   {"lat": 120.0, "lng": 30.0}, "not-a-dict", None):
+        raw = parse_listing(wrap_offer({**base, "geo": {"coordinates": coords}}))
+        assert raw is not None
+        assert raw.lat is None and raw.lon is None
+
+
+def test_string_coordinates_are_parsed() -> None:
+    html = wrap_offer(
+        {"cianId": 31, "geo": {"coordinates": {"lat": "59.95", "lng": "30.30"}},
+         "bargainTerms": {"price": 5_000_000, "currency": "rur"}}
+    )
+    raw = parse_listing(html)
+    assert raw.lat == pytest.approx(59.95)
+    assert raw.lon == pytest.approx(30.30)
 
 
 # --------------------------------------------------------------------------- #
@@ -252,6 +277,10 @@ def test_parse_search_returns_listings() -> None:
         assert raw.source == "cian"
         assert raw.external_id
         assert isinstance(raw.price, int) and raw.price > 0
+    # first fixture offer carries geo.coordinates; the others have none
+    assert items[0].lat == pytest.approx(59.991714)
+    assert items[0].lon == pytest.approx(29.766252)
+    assert items[1].lat is None and items[1].lon is None
 
 
 def test_parse_search_on_captcha_returns_empty() -> None:

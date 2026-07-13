@@ -135,6 +135,8 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
             "area_total": listing["area_total"],
             "floor": listing["floor"],
             "floors_total": listing["floors_total"],
+            "lat": listing["lat"],
+            "lon": listing["lon"],
             "note": src["note"] if src else None,
             "tracked_source_id": src["id"] if src else None,
             "tracked_source_kind": src["kind"] if src else None,

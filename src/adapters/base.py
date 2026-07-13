@@ -43,6 +43,8 @@ class RawListing:
     area_total: float | None = None
     floor: int | None = None
     floors_total: int | None = None
+    lat: float | None = None         # WGS-84 coordinates when the payload has them
+    lon: float | None = None
     extra: dict | None = None        # anything site-specific, stays opaque
 
 

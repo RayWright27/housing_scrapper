@@ -74,13 +74,17 @@ def upsert_listing(
     area_kitchen: float | None = None,
     floor: int | None = None,
     floors_total: int | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
     raw_json: dict[str, Any] | None = None,
 ) -> int:
     """Insert a listing or update the existing one on ``(source, external_id)``.
 
     ``now`` is an ISO-8601 UTC timestamp used for ``first_seen_at`` (on insert)
     and ``last_seen_at`` (always). An upserted listing is marked active.
-    Returns the listing's internal id.
+    ``lat``/``lon`` only overwrite when the new fetch actually provided them
+    (COALESCE), so a payload variant without coordinates never erases a known
+    position. Returns the listing's internal id.
     """
     raw_text = json.dumps(raw_json, ensure_ascii=False) if raw_json is not None else None
     conn.execute(
@@ -88,9 +92,9 @@ def upsert_listing(
         INSERT INTO listings (
             source, external_id, url, title, address, rooms,
             area_total, area_living, area_kitchen, floor, floors_total,
-            first_seen_at, last_seen_at, is_active, raw_json
+            lat, lon, first_seen_at, last_seen_at, is_active, raw_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         ON CONFLICT (source, external_id) DO UPDATE SET
             url          = excluded.url,
             title        = excluded.title,
@@ -101,6 +105,8 @@ def upsert_listing(
             area_kitchen = excluded.area_kitchen,
             floor        = excluded.floor,
             floors_total = excluded.floors_total,
+            lat          = COALESCE(excluded.lat, lat),
+            lon          = COALESCE(excluded.lon, lon),
             last_seen_at = excluded.last_seen_at,
             is_active    = 1,
             raw_json     = excluded.raw_json
@@ -108,7 +114,7 @@ def upsert_listing(
         (
             source, external_id, url, title, address, rooms,
             area_total, area_living, area_kitchen, floor, floors_total,
-            now, now, raw_text,
+            lat, lon, now, now, raw_text,
         ),
     )
     conn.commit()

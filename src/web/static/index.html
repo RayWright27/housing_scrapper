@@ -7,6 +7,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
 <style>
   /* Light theme (default) */
   :root { --bg:#f4f6fb; --card:#ffffff; --line:#e2e6f0; --fg:#1a1f36; --muted:#5a6485;
@@ -74,6 +76,19 @@
   .legend .sw { width:16px; height:4px; border-radius:2px; flex:0 0 auto; }
   /* The plot lives in a height-controlled box (JS grows it with series count). */
   .chartbox { position:relative; width:100%; height:300px; }
+  /* Chart + map share a row; the map column stretches to the chart's height. */
+  .chartrow { display:flex; gap:14px; align-items:stretch; }
+  .chartcol { flex:1 1 0; min-width:0; }
+  .mapbox { flex:0 0 40%; position:relative; min-height:300px;
+            border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .mapbox .lmap { position:absolute; inset:0; z-index:0; background:var(--bg); }
+  .maphint { position:absolute; left:0; right:0; bottom:0; z-index:900; text-align:center;
+             font-size:12px; color:var(--muted); background:var(--card); opacity:.94; padding:5px 8px; }
+  @media (max-width:860px){ .chartrow { flex-direction:column; } .mapbox { flex:auto; height:280px; } }
+  html[data-theme="dark"] .leaflet-tile { filter:brightness(.65) contrast(1.05) saturate(.65); }
+  html[data-theme="dark"] .leaflet-container .leaflet-control-attribution,
+  html[data-theme="dark"] .leaflet-bar a { background:var(--card); color:var(--muted); }
+  .leaflet-popup-content { font:13px/1.4 system-ui,Segoe UI,Roboto,sans-serif; }
   .muted { color:var(--muted); } .empty { color:var(--muted); padding:16px 0; }
   .detail dl { display:grid; grid-template-columns:auto auto; gap:4px 18px; margin:0; }
   .detail dt { color:var(--muted); } .detail dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
@@ -125,8 +140,16 @@
       <button class="icon" id="autoscaleBtn"></button>
       <span class="muted" id="chartHint"></span>
     </div>
-    <div id="legend" class="legend"></div>
-    <div id="chartBox" class="chartbox"><canvas id="chart"></canvas></div>
+    <div class="chartrow">
+      <div class="chartcol">
+        <div id="legend" class="legend"></div>
+        <div id="chartBox" class="chartbox"><canvas id="chart"></canvas></div>
+      </div>
+      <div class="mapbox" id="mapBox">
+        <div id="map" class="lmap"></div>
+        <div class="maphint" id="mapHint"></div>
+      </div>
+    </div>
   </div>
 
   <!-- 4. detail panel -->
@@ -176,6 +199,9 @@ const I18N = {
     sched_run:"запуск", sched_never:"планировщик ещё не запускался",
     sched_overdue:"просрочен", sched_ok:"работает", sched_err:"сбой последнего запуска",
     sched_title:(run,next,n,err)=>`Планировщик CIAN\nПосл. запуск: ${run}\nСледующий: ${next}\nСобытий: ${n}`+(err?`\nОшибка: ${err}`:``),
+    map_select:"Выберите объекты выше — они появятся на карте.",
+    map_missing:n=>`Без координат: ${n} — заполнится после следующей проверки.`,
+    map_target:"Цель",
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -215,6 +241,9 @@ const I18N = {
     sched_run:"ran", sched_never:"scheduler has not run yet",
     sched_overdue:"overdue", sched_ok:"running", sched_err:"last run failed",
     sched_title:(run,next,n,err)=>`CIAN scheduler\nLast run: ${run}\nNext: ${next}\nEvents: ${n}`+(err?`\nError: ${err}`:``),
+    map_select:"Select objects above to see them on the map.",
+    map_missing:n=>`${n} without coordinates yet — fills in after the next check.`,
+    map_target:"Target",
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -435,6 +464,7 @@ async function refreshChart(){
   }
   document.getElementById("chartHint").textContent = ids.length ? (greyed? t("hint_greyed"):"") : t("hint_select");
   drawChart(datasets, mode);
+  updateMap();
   renderDetail(ids.length?ids[0]:null);
 }
 
@@ -484,6 +514,52 @@ function renderLegend(datasets){
     chart.setDatasetVisibility(i, !vis); el.classList.toggle("off", vis); chart.update();
   });
 }
+// ---------------------------------------------------------------------------- //
+// Map: mirrors the chart selection. Pins carry the series colour; a selected
+// object without stored coordinates is counted in the hint (coords arrive with
+// the object's next successful fetch — the map never geocodes anything).
+// ---------------------------------------------------------------------------- //
+let MAP=null, MAP_MARKERS=[];
+function ensureMap(){
+  if(MAP) return MAP;
+  if(typeof L==="undefined"){ document.getElementById("mapBox").style.display="none"; return null; }
+  MAP=L.map("map");
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }).addTo(MAP);
+  MAP.setView([59.94,30.31],10);   // placeholder view until something is selected
+  return MAP;
+}
+function popupHtml(l){
+  const ppm=l.price_per_m2!=null ? ` · ${rub(l.price_per_m2)}/${t("unit_m2")}` : "";
+  const tgt=l.target_price!=null
+    ? `<br>🎯 ${t("map_target")}: ${rub(l.target_price)}`+(l.target_delta_pct!=null?` (${pct(l.target_delta_pct)})`:``) : "";
+  const addr=l.address ? `<br><span style="opacity:.7">${l.address}</span>` : "";
+  return `<b>${label(l)}</b><br>${rub(l.current_price)}${ppm}${tgt}${addr}`+
+         `<br><a href="${l.url}" target="_blank" rel="noopener">${t("d_open")}</a>`;
+}
+function updateMap(){
+  const m=ensureMap(); if(!m) return;
+  MAP_MARKERS.forEach(mk=>mk.remove()); MAP_MARKERS=[];
+  const sel=[...SELECTED].map(id=>LISTINGS.find(l=>l.id===id)).filter(Boolean);
+  const located=sel.filter(l=>l.lat!=null && l.lon!=null);
+  for(const l of located){
+    const c=colorFor(l.id);
+    const mk=L.circleMarker([l.lat,l.lon],
+      { radius:9, color:c, weight:2.5, fillColor:c, fillOpacity:.5, opacity:l.status==='delisted'?.45:1 });
+    mk.bindPopup(popupHtml(l));
+    mk.addTo(m); MAP_MARKERS.push(mk);
+  }
+  const hint=document.getElementById("mapHint");
+  const missing=sel.length-located.length;
+  hint.textContent = !sel.length ? t("map_select") : (missing ? t("map_missing")(missing) : "");
+  hint.style.display = hint.textContent ? "" : "none";
+  // The chart column height varies with series count; re-measure, then frame the pins.
+  setTimeout(()=>{ m.invalidateSize();
+    if(located.length===1) m.setView([located[0].lat,located[0].lon],15);
+    else if(located.length>1) m.fitBounds(L.latLngBounds(located.map(l=>[l.lat,l.lon])).pad(0.25));
+  },0);
+}
+
 function selectAllChips(){ SELECTED=new Set(LISTINGS.map(l=>l.id)); renderChips(); refreshChart(); }
 function clearAllChips(){ SELECTED=new Set(); renderChips(); refreshChart(); }
 function resetZoom(){ if(chart) chart.resetZoom(); }

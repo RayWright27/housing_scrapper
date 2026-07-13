@@ -140,6 +140,75 @@ def test_upsert_is_idempotent_on_identity(conn: sqlite3.Connection) -> None:
     assert row["is_active"] == 1
 
 
+def test_upsert_stores_coordinates(conn: sqlite3.Connection) -> None:
+    lid = repo.upsert_listing(
+        conn, source="cian", external_id="geo1", url="u", now=NOW,
+        lat=59.94, lon=30.31,
+    )
+    row = conn.execute("SELECT lat, lon FROM listings WHERE id = ?", (lid,)).fetchone()
+    assert row["lat"] == 59.94
+    assert row["lon"] == 30.31
+
+
+def test_upsert_without_coords_keeps_known_position(conn: sqlite3.Connection) -> None:
+    # A payload variant missing coordinates must not erase a stored position.
+    lid = repo.upsert_listing(
+        conn, source="cian", external_id="geo2", url="u", now=NOW,
+        lat=59.94, lon=30.31,
+    )
+    repo.upsert_listing(conn, source="cian", external_id="geo2", url="u", now=LATER)
+    row = conn.execute("SELECT lat, lon FROM listings WHERE id = ?", (lid,)).fetchone()
+    assert row["lat"] == 59.94
+    assert row["lon"] == 30.31
+
+
+def test_upsert_with_coords_updates_position(conn: sqlite3.Connection) -> None:
+    lid = repo.upsert_listing(
+        conn, source="cian", external_id="geo3", url="u", now=NOW,
+        lat=59.94, lon=30.31,
+    )
+    repo.upsert_listing(
+        conn, source="cian", external_id="geo3", url="u", now=LATER,
+        lat=59.95, lon=30.32,
+    )
+    row = conn.execute("SELECT lat, lon FROM listings WHERE id = ?", (lid,)).fetchone()
+    assert row["lat"] == 59.95
+    assert row["lon"] == 30.32
+
+
+def test_migration_adds_lat_lon_to_existing_listings_table() -> None:
+    # A DB created before the map feature has `listings` without lat/lon;
+    # bootstrap must ALTER it in place (durable rows are kept, values NULL).
+    from src.storage.db import bootstrap, connect
+
+    c = connect(":memory:")
+    c.execute(
+        """
+        CREATE TABLE listings (
+            id INTEGER PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL,
+            url TEXT NOT NULL, title TEXT, address TEXT, rooms INTEGER,
+            area_total REAL, area_living REAL, area_kitchen REAL,
+            floor INTEGER, floors_total INTEGER,
+            first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1, raw_json TEXT,
+            UNIQUE (source, external_id)
+        )
+        """
+    )
+    c.execute(
+        "INSERT INTO listings (source, external_id, url, first_seen_at, last_seen_at)"
+        " VALUES ('cian', 'old', 'u', ?, ?)",
+        (NOW, NOW),
+    )
+    c.commit()
+    bootstrap(c)
+    row = c.execute(
+        "SELECT lat, lon FROM listings WHERE external_id = 'old'"
+    ).fetchone()
+    assert row["lat"] is None and row["lon"] is None
+    c.close()
+
+
 def test_upsert_reactivates_listing(conn: sqlite3.Connection) -> None:
     lid = repo.upsert_listing(
         conn, source="cian", external_id="x", url="u", now=NOW

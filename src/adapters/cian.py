@@ -257,6 +257,22 @@ def _extract_address(offer: dict[str, Any]) -> str | None:
     return ui if isinstance(ui, str) else None
 
 
+def _extract_coords(offer: dict[str, Any]) -> tuple[float | None, float | None]:
+    """WGS-84 ``(lat, lon)`` from ``geo.coordinates``, or ``(None, None)``.
+
+    Both values must be present and plausible — a lone half-coordinate is
+    useless for a map pin.
+    """
+    coords = (offer.get("geo") or {}).get("coordinates")
+    if not isinstance(coords, dict):
+        return None, None
+    lat = _to_float(coords.get("lat"))
+    lon = _to_float(coords.get("lng"))
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None, None
+    return lat, lon
+
+
 def _extract_title(html: str | None) -> str | None:
     if not html:
         return None
@@ -327,6 +343,7 @@ def _offer_to_raw(
         "price": price,
     }
 
+    lat, lon = _extract_coords(offer)
     return RawListing(
         source="cian",
         external_id=external_id,
@@ -338,6 +355,8 @@ def _offer_to_raw(
         area_total=_to_float(offer.get("totalArea")),
         floor=_to_int(offer.get("floorNumber")),
         floors_total=_to_int((offer.get("building") or {}).get("floorsCount")),
+        lat=lat,
+        lon=lon,
         extra=extra,
     )
 

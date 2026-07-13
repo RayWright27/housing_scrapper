@@ -164,6 +164,37 @@ def _to_int(v: Any) -> int | None:
     return None
 
 
+def _to_coord(v: Any) -> float | None:
+    """A single coordinate: SERP items carry strings, listing pages numbers."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.replace(",", ".").strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_coords(item: dict[str, Any]) -> tuple[float | None, float | None]:
+    """WGS-84 ``(lat, lon)`` or ``(None, None)``.
+
+    A listing page carries ``item.geo.coords`` (numeric), a SERP item carries
+    ``item.coords`` (string values). Deliberately ignores ``location.coords`` —
+    that is the city centre, not the flat.
+    """
+    coords = item.get("coords") or (item.get("geo") or {}).get("coords")
+    if not isinstance(coords, dict):
+        return None, None
+    lat = _to_coord(coords.get("lat"))
+    lon = _to_coord(coords.get("lng"))
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None, None
+    return lat, lon
+
+
 def _area_from(text: str | None) -> float | None:
     if not text:
         return None
@@ -284,6 +315,7 @@ def _item_to_raw(
         "isActive": item.get("isActive"),
     }
 
+    lat, lon = _extract_coords(item)
     return RawListing(
         source="avito",
         external_id=external_id,
@@ -295,6 +327,8 @@ def _item_to_raw(
         area_total=area_total,
         floor=floor,
         floors_total=floors_total,
+        lat=lat,
+        lon=lon,
         extra=extra,
     )
 

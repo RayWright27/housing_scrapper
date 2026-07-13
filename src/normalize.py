@@ -46,6 +46,8 @@ class Listing:
     area_kitchen: float | None = None
     floor: int | None = None
     floors_total: int | None = None
+    lat: float | None = None
+    lon: float | None = None
     raw_json: dict[str, Any] | None = None
 
 
@@ -87,5 +89,7 @@ def normalize(raw: RawListing) -> Listing:
         area_kitchen=extra.get("area_kitchen"),
         floor=raw.floor,
         floors_total=raw.floors_total,
+        lat=raw.lat,
+        lon=raw.lon,
         raw_json=asdict(raw),  # JSON-serializable snapshot for debugging
     )

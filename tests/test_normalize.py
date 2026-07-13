@@ -27,6 +27,8 @@ def test_full_field_mapping() -> None:
         area_total=54.0,
         floor=5,
         floors_total=12,
+        lat=55.751,
+        lon=37.618,
         extra={"area_living": 30.5, "area_kitchen": 9.0},
     )
     listing = normalize(raw)
@@ -42,6 +44,8 @@ def test_full_field_mapping() -> None:
     assert listing.area_kitchen == 9.0
     assert listing.floor == 5
     assert listing.floors_total == 12
+    assert listing.lat == 55.751
+    assert listing.lon == 37.618
 
 
 def test_price_is_not_carried_onto_listing() -> None:
@@ -65,6 +69,8 @@ def test_all_optionals_missing_become_none() -> None:
     assert listing.area_kitchen is None
     assert listing.floor is None
     assert listing.floors_total is None
+    assert listing.lat is None
+    assert listing.lon is None
 
 
 def test_area_living_and_kitchen_pulled_from_extra() -> None:
@@ -126,6 +132,8 @@ def test_normalize_output_persists_and_reads_back_unchanged() -> None:
             area_total=70.0,
             floor=4,
             floors_total=9,
+            lat=59.93,
+            lon=30.36,
             extra={"area_living": 45.0, "area_kitchen": 11.0},
         )
         listing: Listing = normalize(raw)
@@ -144,6 +152,8 @@ def test_normalize_output_persists_and_reads_back_unchanged() -> None:
             area_kitchen=listing.area_kitchen,
             floor=listing.floor,
             floors_total=listing.floors_total,
+            lat=listing.lat,
+            lon=listing.lon,
             raw_json=listing.raw_json,
         )
 
@@ -159,6 +169,8 @@ def test_normalize_output_persists_and_reads_back_unchanged() -> None:
         assert row["area_kitchen"] == listing.area_kitchen
         assert row["floor"] == listing.floor
         assert row["floors_total"] == listing.floors_total
+        assert row["lat"] == listing.lat
+        assert row["lon"] == listing.lon
         assert json.loads(row["raw_json"]) == listing.raw_json
     finally:
         conn.close()

@@ -112,6 +112,8 @@ def _process_listing(
         area_kitchen=listing.area_kitchen,
         floor=listing.floor,
         floors_total=listing.floors_total,
+        lat=listing.lat,
+        lon=listing.lon,
         raw_json=listing.raw_json,
     )
     repo.link_source_listing(conn, src_row["id"], listing_id)

@@ -45,6 +45,7 @@ Concretely:
   transparent). SQLAlchemy is acceptable only if explicitly requested.
 - **FastAPI** + **uvicorn** for the local read/manage web dashboard (§9).
 - **Chart.js** (loaded from CDN in the static page) for the price chart.
+  **Leaflet** + OpenStreetMap tiles (also CDN, no API key) for the map panel.
   No frontend build step — one static HTML page, vanilla JS.
 - **Telegram Bot API** for push notifications on price changes — called with the
   stdlib `urllib` (no `python-telegram-bot` dependency; the need is a single
@@ -136,6 +137,8 @@ notifications and the dashboard, never a change-detection input). Treat
 | area_kitchen   | REAL    | nullable                            |
 | floor          | INTEGER | nullable                            |
 | floors_total   | INTEGER | nullable                            |
+| lat            | REAL    | WGS-84, nullable (from site payload)|
+| lon            | REAL    | nullable; upsert keeps old on NULL  |
 | first_seen_at  | TEXT    | ISO-8601 UTC                        |
 | last_seen_at   | TEXT    | ISO-8601 UTC                        |
 | is_active      | INTEGER | 0 once it disappears from the site  |
@@ -194,6 +197,8 @@ class RawListing:
     area_total: float | None = None
     floor: int | None = None
     floors_total: int | None = None
+    lat: float | None = None   # WGS-84 coordinates when the payload has them
+    lon: float | None = None
     extra: dict | None = None  # anything site-specific, stays opaque downstream
 
 class SiteAdapter(Protocol):
@@ -291,6 +296,13 @@ Layout — three stacked regions on one page:
 
 3. **Chart section** (configurable price history):
    - Listing selector: multi-select chips to overlay several objects on one chart.
+   - **Map panel** beside the chart (Leaflet + OpenStreetMap tiles from CDN, no
+     API key): a pin for each listing currently selected for the chart, in the
+     same series colour; popup carries the object summary, current price, ₽/m²,
+     target (if set) and a link. Coordinates come from the adapters' payloads
+     (`listings.lat/lon`) — the dashboard never geocodes; a selected listing
+     without stored coordinates is counted in a small hint and appears after its
+     next successful fetch.
    - Time range: all / 90d / 30d.
    - Y-axis mode: `₽` (absolute) / `₽/m²` (size-normalized) / `% from start`
      (each series rebased to its first observation — lets objects of different
