@@ -109,6 +109,30 @@ def test_count_active_links_ignores_delisted_links(conn: sqlite3.Connection) -> 
     assert repo.count_active_links(conn, src) == 1
 
 
+def test_backup_names_stay_unique_when_clock_stalls(tmp_path, monkeypatch) -> None:
+    # Windows' clock ticks coarser than 1µs: two rapid backups can land on the
+    # same timestamp. They must get distinct names, not overwrite one snapshot.
+    from datetime import datetime, timezone
+
+    from src.storage import db as db_mod
+
+    db_file = tmp_path / "tracker.db"
+    init_db(str(db_file)).close()
+
+    frozen = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime:
+        @staticmethod
+        def now(tz=None):
+            return frozen
+
+    monkeypatch.setattr(db_mod, "datetime", _FrozenDatetime)
+    a = backup_db(str(db_file), keep=5)
+    b = backup_db(str(db_file), keep=5)
+    assert a is not None and b is not None
+    assert a != b and a.exists() and b.exists()
+
+
 def test_upsert_is_idempotent_on_identity(conn: sqlite3.Connection) -> None:
     first = repo.upsert_listing(
         conn,

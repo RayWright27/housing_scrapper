@@ -100,9 +100,15 @@ def backup_db(db_path: str, keep: int = 10) -> Path | None:
     src_path = Path(db_path)
     backups = src_path.parent / "backups"
     backups.mkdir(parents=True, exist_ok=True)
-    # Microseconds keep the name unique even for backups made in the same second.
+    # Microseconds keep the name unique even for backups made in the same second —
+    # but the Windows clock ticks coarser than 1µs, so two rapid backups can still
+    # collide; a counter suffix keeps a collision from overwriting the snapshot.
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     dest = backups / f"{src_path.stem}-{ts}{src_path.suffix}"
+    n = 1
+    while dest.exists():
+        dest = backups / f"{src_path.stem}-{ts}-{n}{src_path.suffix}"
+        n += 1
     try:
         src = sqlite3.connect(db_path)
         dst = sqlite3.connect(dest)
