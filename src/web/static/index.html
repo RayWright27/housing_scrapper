@@ -358,6 +358,7 @@ async function loadAll(){
   SELECTED = new Set([...SELECTED].filter(id => LISTINGS.some(l=>l.id===id)));
   REFRESH_STATUS = new Map();   // stale after any reload; doRefresh re-sets its own
   LINKING = null;               // any reload leaves link mode
+  HIST = {};                    // drop cached history so the chart shows new observations
   renderAll();
 }
 function renderAll(){ renderCards(); renderTable(); renderChips(); refreshChart(); renderScheduler(); }
@@ -559,8 +560,13 @@ async function refreshChart(){
     let data=transform(h.observations, h.area_total, mode);
     if(data===null){ greyed=true; continue; }
     if(data.length){ const last=data[data.length-1]; data=[...data,{x:Date.now(), y:last.y}]; }
+    // stepped:"before" holds each observation's price forward until the NEXT
+    // observation, then jumps at that later point — i.e. the jump lands on the
+    // date the new price was seen. (Chart.js "after" mirrors this: it jumps at
+    // the earlier point, drawing the new price backwards in time — wrong for a
+    // price series.) Equivalent to the `stepped:true` the dashboard spec asks for.
     datasets.push({ label:label(l), data, borderColor:colorFor(id), backgroundColor:colorFor(id),
-      stepped:"after", pointRadius:data.map((_,i)=> i<data.length-1?3:0), tension:0, borderWidth:2 });
+      stepped:"before", pointRadius:data.map((_,i)=> i<data.length-1?3:0), tension:0, borderWidth:2 });
   }
   document.getElementById("chartHint").textContent = ids.length ? (greyed? t("hint_greyed"):"") : t("hint_select");
   drawChart(datasets, mode);
