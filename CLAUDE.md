@@ -112,8 +112,10 @@ key/value store for the scheduler heartbeat + last-backup timestamp),
 notifications and the dashboard, never a change-detection input) and
 `listing_links` (a user assertion that several rows are the SAME physical flat
 published on different sites — each row keeps its own history; the dashboard
-only shows the partner's price next to a row for comparison). Treat
-`schema.sql` as the single source of truth for DDL.
+only shows the partner's price next to a row for comparison) and
+`listing_status` (the user's own workflow state per listing —
+viewed/called/shortlist/rejected — a light funnel; display-only, never gates
+tracking). Treat `schema.sql` as the single source of truth for DDL.
 
 **`tracked_sources`** — the fixed list of things to watch.
 | column      | type    | notes                                  |
@@ -341,6 +343,9 @@ API shape (keep it this simple):
   `DELETE` unlinks. Display context only: each row keeps its own price history;
   the row gains the partner's current price + gap. Linking rows that already
   belong to groups merges the groups; a group left with one member dissolves.
+- `PUT /api/listings/{id}/status` — body `{status}` (viewed | called |
+  shortlist | rejected); set the user's workflow status. `DELETE` clears it.
+  Display only: a rejected listing keeps being tracked, its row/pin just dims.
 - `DELETE /api/tracked/{id}` — deactivate (set `active=0`); never hard-delete
   history.
 - `POST /api/refresh` — run one CIAN pass now (like `run-once`) and notify on

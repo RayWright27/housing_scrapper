@@ -60,6 +60,10 @@ class LinkBody(BaseModel):
     other_id: int
 
 
+class StatusBody(BaseModel):
+    status: str
+
+
 def _no_notify(conn, events) -> None:
     """Default notify seam: do nothing (used by offline tests)."""
 
@@ -216,6 +220,27 @@ def create_app(
         with get_conn() as conn:
             repo.unlink_listing(conn, listing_id)
         return {"listing_id": listing_id, "group": None}
+
+    @app.put("/api/listings/{listing_id}/status")
+    def api_set_status(listing_id: int, body: StatusBody) -> dict:
+        """Set the user's workflow status (viewed/called/shortlist/rejected).
+        Display-only: a rejected listing keeps being tracked; it just dims."""
+        if body.status not in repo.LISTING_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"status must be one of {', '.join(repo.LISTING_STATUSES)}",
+            )
+        with get_conn() as conn:
+            if repo.get_listing(conn, listing_id) is None:
+                raise HTTPException(status_code=404, detail="listing not found")
+            repo.set_status(conn, listing_id, body.status, service._now_iso())
+        return {"listing_id": listing_id, "status": body.status}
+
+    @app.delete("/api/listings/{listing_id}/status")
+    def api_clear_status(listing_id: int) -> dict:
+        with get_conn() as conn:
+            repo.clear_status(conn, listing_id)
+        return {"listing_id": listing_id, "status": None}
 
     @app.delete("/api/tracked/{tracked_id}")
     def api_remove(tracked_id: int) -> dict:

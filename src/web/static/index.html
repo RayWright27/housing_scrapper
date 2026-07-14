@@ -43,7 +43,7 @@
   table { width:100%; border-collapse:collapse; margin-top:12px; }
   th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
   th { color:var(--muted); font-weight:600; font-size:12px; }
-  tr.delisted { opacity:.45; }
+  tr.delisted, tr.rejected { opacity:.45; }
   tr.changed td { background:rgba(31,158,95,.10); }   /* row touched by the last refresh */
   .fdot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
   .fdot.fresh { background:var(--down); } .fdot.recent { background:#e0a020; } .fdot.stale { background:var(--dot-off); }
@@ -65,6 +65,10 @@
   .lk.on { opacity:1; }
   .lk.arm { opacity:1; outline:2px solid var(--accent); border-radius:6px; }
   .plink { font-size:11px; color:var(--muted); white-space:nowrap; }
+  .stsel { font-size:11px; padding:1px 2px; margin-left:6px; color:var(--muted);
+           border:1px solid transparent; background:transparent; border-radius:6px; }
+  .stsel:hover { border-color:var(--line); }
+  .stsel.set { color:var(--fg); }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
   .chip { font-size:12px; padding:4px 8px; border-radius:20px; border:1px solid var(--line);
           cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px; }
@@ -213,6 +217,8 @@ const I18N = {
     link_unlink_confirm:"Разорвать связь с парным объявлением?",
     link_done:"Объявления связаны.",
     link_removed:"Связь разорвана.",
+    st_o_none:"· статус", st_o_viewed:"👁 просмотрено", st_o_called:"📞 звонили",
+    st_o_shortlist:"⭐ шорт-лист", st_o_rejected:"✖ отклонено",
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -262,6 +268,8 @@ const I18N = {
     link_unlink_confirm:"Unlink from the partner listing?",
     link_done:"Listings linked.",
     link_removed:"Link removed.",
+    st_o_none:"· status", st_o_viewed:"👁 viewed", st_o_called:"📞 called",
+    st_o_shortlist:"⭐ shortlist", st_o_rejected:"✖ rejected",
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -398,9 +406,9 @@ function renderTable(){
       st.k==='checking'  ? `<span class="rb wait">${t("st_checking")}</span>` :
       st.k==='unchecked' ? `<span class="rb no">${t("st_unchecked")}</span>` :
                            `<span class="rb same">${t("st_same")}</span>`;
-    return `<tr class="${l.status==='delisted'?'delisted ':''}${st&&st.k==='changed'?'changed':''}">
+    return `<tr class="${l.status==='delisted'?'delisted ':''}${l.user_status==='rejected'?'rejected ':''}${st&&st.k==='changed'?'changed':''}">
       <td><span class="badge">${l.source}</span></td>
-      <td><a href="${l.url}" target="_blank" rel="noopener">${label(l)}</a></td>
+      <td><a href="${l.url}" target="_blank" rel="noopener">${label(l)}</a>${statusSel(l)}</td>
       <td class="num">${rub(l.current_price)}${partnerLines(l)}</td>
       <td class="num">${l.price_per_m2==null?'—':rub(l.price_per_m2)+"/"+t("unit_m2")}</td>
       <td class="num">${targetCell(l)}</td>
@@ -419,6 +427,28 @@ function renderTable(){
   document.querySelectorAll("[data-tgt]").forEach(el=>el.onclick=()=>
     setTarget(+el.dataset.tgt, el.dataset.cur? +el.dataset.cur : null));
   document.querySelectorAll(".lk").forEach(b=>b.onclick=()=>linkClick(+b.dataset.lk));
+  document.querySelectorAll(".stsel").forEach(s=>s.onchange=()=>setStatus(+s.dataset.st, s.value));
+}
+
+// The user's workflow status: a compact inline select next to the object label.
+const USER_STATUSES = ["viewed","called","shortlist","rejected"];
+function statusSel(l){
+  const cur=l.user_status||"";
+  const opts=[`<option value="" ${cur?"":"selected"}>${t("st_o_none")}</option>`]
+    .concat(USER_STATUSES.map(s=>
+      `<option value="${s}" ${cur===s?"selected":""}>${t("st_o_"+s)}</option>`));
+  return `<select class="stsel ${cur?'set':''}" data-st="${l.id}">${opts.join("")}</select>`;
+}
+
+async function setStatus(id, status){
+  try{
+    const r = status
+      ? await fetch(`/api/listings/${id}/status`,{ method:"PUT",
+          headers:{"Content-Type":"application/json"}, body:JSON.stringify({status})})
+      : await fetch(`/api/listings/${id}/status`,{method:"DELETE"});
+    if(!r.ok) throw new Error();
+    await loadAll();
+  }catch(e){ alert(t("err_generic")(e.message||"")); }
 }
 
 // The partner price line(s) under a linked row's price: 'avito: 7 350 000 ₽ (−45 000 ₽)'.
@@ -609,9 +639,10 @@ function updateMap(){
   const sel=[...SELECTED].map(id=>LISTINGS.find(l=>l.id===id)).filter(Boolean);
   const located=sel.filter(l=>l.lat!=null && l.lon!=null);
   for(const l of located){
-    const c=colorFor(l.id);
+    const dim = l.status==='delisted' || l.user_status==='rejected';
+    const c = l.user_status==='rejected' ? (cssVar("--dot-off")||"#c7cde0") : colorFor(l.id);
     const mk=L.circleMarker([l.lat,l.lon],
-      { radius:9, color:c, weight:2.5, fillColor:c, fillOpacity:.5, opacity:l.status==='delisted'?.45:1 });
+      { radius:9, color:c, weight:2.5, fillColor:c, fillOpacity:.5, opacity:dim?.45:1 });
     mk.bindPopup(popupHtml(l));
     mk.addTo(m); MAP_MARKERS.push(mk);
   }

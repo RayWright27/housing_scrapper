@@ -255,6 +255,23 @@ def test_unlink_unlinked_is_noop(conn: sqlite3.Connection) -> None:
     assert repo.get_link_groups(conn) == {}
 
 
+def test_status_set_replace_clear(conn: sqlite3.Connection) -> None:
+    a = _listing(conn, "a")
+    assert repo.get_all_statuses(conn) == {}
+    repo.set_status(conn, a, "viewed", NOW)
+    assert repo.get_all_statuses(conn) == {a: "viewed"}
+    repo.set_status(conn, a, "rejected", LATER)          # replace
+    assert repo.get_all_statuses(conn) == {a: "rejected"}
+    repo.clear_status(conn, a)
+    assert repo.get_all_statuses(conn) == {}
+
+
+def test_status_rejects_unknown_value(conn: sqlite3.Connection) -> None:
+    a = _listing(conn, "a")
+    with pytest.raises(ValueError):
+        repo.set_status(conn, a, "banana", NOW)
+
+
 def test_migration_adds_lat_lon_to_existing_listings_table() -> None:
     # A DB created before the map feature has `listings` without lat/lon;
     # bootstrap must ALTER it in place (durable rows are kept, values NULL).

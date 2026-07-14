@@ -396,6 +396,41 @@ def get_all_targets(conn: sqlite3.Connection) -> dict[int, int]:
 
 
 # --------------------------------------------------------------------------- #
+# listing_status: the user's own workflow state per listing (light funnel)
+# --------------------------------------------------------------------------- #
+# The allowed states live here so every consumer (web layer, future CLI)
+# validates against one list. Purely user intent — never written by scraping.
+LISTING_STATUSES = ("viewed", "called", "shortlist", "rejected")
+
+
+def set_status(conn: sqlite3.Connection, listing_id: int, status: str,
+               updated_at: str) -> None:
+    """Set (or replace) the user's workflow status for a listing."""
+    if status not in LISTING_STATUSES:
+        raise ValueError(f"unknown listing status: {status!r}")
+    conn.execute(
+        "INSERT INTO listing_status (listing_id, status, updated_at) "
+        "VALUES (?, ?, ?) "
+        "ON CONFLICT (listing_id) DO UPDATE SET "
+        "    status = excluded.status, updated_at = excluded.updated_at",
+        (listing_id, status, updated_at),
+    )
+    conn.commit()
+
+
+def clear_status(conn: sqlite3.Connection, listing_id: int) -> None:
+    """Remove a listing's workflow status (no-op if none is set)."""
+    conn.execute("DELETE FROM listing_status WHERE listing_id = ?", (listing_id,))
+    conn.commit()
+
+
+def get_all_statuses(conn: sqlite3.Connection) -> dict[int, str]:
+    """All workflow statuses as ``{listing_id: status}``."""
+    return {int(r["listing_id"]): r["status"]
+            for r in conn.execute("SELECT listing_id, status FROM listing_status")}
+
+
+# --------------------------------------------------------------------------- #
 # listing_links: user assertion "these rows are the same flat on different sites"
 # --------------------------------------------------------------------------- #
 def link_listings(conn: sqlite3.Connection, listing_id_a: int, listing_id_b: int,

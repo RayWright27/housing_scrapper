@@ -114,3 +114,13 @@ CREATE TABLE IF NOT EXISTS listing_links (
 );
 
 CREATE INDEX IF NOT EXISTS idx_listing_links_group ON listing_links (group_id);
+
+-- The user's own workflow state per listing ('viewed' | 'called' | 'shortlist' |
+-- 'rejected'; absent = none) — turns the tracked table into a light funnel.
+-- User intent like listing_targets/listing_links: never written by scraping,
+-- display-only (a rejected listing keeps being tracked; its row/pin just dims).
+CREATE TABLE IF NOT EXISTS listing_status (
+    listing_id INTEGER PRIMARY KEY REFERENCES listings (id),
+    status     TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL              -- ISO-8601 UTC
+);

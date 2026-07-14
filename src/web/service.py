@@ -117,6 +117,7 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
     now = now or _now_iso()
     targets = repo.get_all_targets(conn)
     link_groups = repo.get_link_groups(conn)
+    statuses = repo.get_all_statuses(conn)
     out: list[dict] = []
     for listing in repo.list_listings(conn):
         obs = _observations(conn, listing["id"])
@@ -154,6 +155,7 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
             "target_price": target,
             "target_delta_pct": target_delta_pct(current, target),
             "link_group": link_groups.get(listing["id"]),
+            "user_status": statuses.get(listing["id"]),
         })
     _attach_link_partners(out)
     return out

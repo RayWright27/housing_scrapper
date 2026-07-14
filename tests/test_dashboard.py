@@ -288,6 +288,27 @@ def test_link_endpoints(conn) -> None:
     assert rows[a]["linked"] == [] and rows[b]["linked"] == []
 
 
+def test_status_endpoints(conn) -> None:
+    client = _client(conn)
+    client.post("/api/tracked", json={"url": "https://spb.cian.ru/sale/flat/777/"})
+    lid = client.get("/api/listings").json()[0]["id"]
+
+    assert client.get("/api/listings").json()[0]["user_status"] is None
+
+    assert client.put(f"/api/listings/{lid}/status",
+                      json={"status": "shortlist"}).status_code == 200
+    assert client.get("/api/listings").json()[0]["user_status"] == "shortlist"
+
+    # unknown status -> 400; unknown listing -> 404
+    assert client.put(f"/api/listings/{lid}/status",
+                      json={"status": "banana"}).status_code == 400
+    assert client.put("/api/listings/9999/status",
+                      json={"status": "viewed"}).status_code == 404
+
+    assert client.delete(f"/api/listings/{lid}/status").status_code == 200
+    assert client.get("/api/listings").json()[0]["user_status"] is None
+
+
 def test_post_unknown_host_is_400(conn) -> None:
     r = _client(conn).post("/api/tracked", json={"url": "https://example.com/x"})
     assert r.status_code == 400
