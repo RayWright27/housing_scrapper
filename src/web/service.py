@@ -77,6 +77,31 @@ def change_count(observations: list[dict]) -> int:
     return max(0, len(observations) - 1)
 
 
+def days_on_market(first_seen_at: str | None, now: str) -> int | None:
+    """Whole days since the listing was first seen — negotiation context
+    (a flat sitting unsold for months tends to be more negotiable)."""
+    if not first_seen_at:
+        return None
+    delta = datetime.fromisoformat(now) - datetime.fromisoformat(first_seen_at)
+    return max(0, delta.days)
+
+
+def last_change(observations: list[dict]) -> dict | None:
+    """The most recent price move: amount (signed rubles), percent, and when.
+
+    ``None`` when there has been no change yet (a lone first observation). This
+    is the "they already cut 300k two weeks ago" context for the detail panel,
+    distinct from ``delta_total_pct`` (change from the very first price).
+    """
+    if len(observations) < 2:
+        return None
+    prev, last = observations[-2]["price"], observations[-1]["price"]
+    amount = last - prev
+    percent = round(amount / prev * 100, 1) if prev else None
+    return {"amount": amount, "percent": percent,
+            "at": observations[-1]["observed_at"]}
+
+
 # --------------------------------------------------------------------------- #
 # DB reads
 # --------------------------------------------------------------------------- #
@@ -156,6 +181,8 @@ def listing_rows(conn: sqlite3.Connection, now: str | None = None) -> list[dict]
             "target_delta_pct": target_delta_pct(current, target),
             "link_group": link_groups.get(listing["id"]),
             "user_status": statuses.get(listing["id"]),
+            "days_on_market": days_on_market(listing["first_seen_at"], now),
+            "last_change": last_change(obs),
         })
     _attach_link_partners(out)
     return out

@@ -51,6 +51,24 @@ def test_min_max_and_change_count() -> None:
     assert service.change_count(obs((100, "a"))) == 0  # first-seen only, no change
 
 
+def test_days_on_market() -> None:
+    assert service.days_on_market("2026-06-04T12:00:00+00:00", NOW) == 30
+    assert service.days_on_market(NOW, NOW) == 0
+    assert service.days_on_market(None, NOW) is None
+
+
+def test_last_change_amount_pct_and_date() -> None:
+    assert service.last_change(obs((100, "a"))) is None          # baseline only
+    o = obs((10_000_000, "2026-06-01T12:00:00+00:00"),
+            (9_700_000, "2026-07-01T12:00:00+00:00"))
+    c = service.last_change(o)
+    assert c == {"amount": -300_000, "percent": -3.0,
+                 "at": "2026-07-01T12:00:00+00:00"}
+    # an increase is positive; percent is relative to the previous price
+    up = service.last_change(obs((100, "a"), (125, "b")))
+    assert up["amount"] == 25 and up["percent"] == 25.0
+
+
 def test_detect_source() -> None:
     assert service.detect_source("https://www.cian.ru/sale/flat/1/") == "cian"
     assert service.detect_source("https://spb.cian.ru/x") == "cian"
@@ -93,6 +111,9 @@ def test_listing_rows_computes_fields(conn) -> None:
     assert row["min_price"] == 9_000_000 and row["max_price"] == 10_000_000
     assert row["note"] == "mine" and row["tracked_source_id"] == src
     assert row["status"] == "active"
+    assert row["days_on_market"] == 0           # _seed sets first_seen_at = NOW
+    assert row["last_change"] == {"amount": -1_000_000, "percent": -10.0,
+                                  "at": "2026-07-01T12:00:00+00:00"}
 
 
 def test_summary_counts_changes_in_7d(conn) -> None:

@@ -219,6 +219,8 @@ const I18N = {
     link_removed:"Связь разорвана.",
     st_o_none:"· статус", st_o_viewed:"👁 просмотрено", st_o_called:"📞 звонили",
     st_o_shortlist:"⭐ шорт-лист", st_o_rejected:"✖ отклонено",
+    d_on_market:"На рынке", d_last_change:"Последнее изменение", d_no_change:"без изменений",
+    days_ago:n=>n===0?"сегодня":n+" дн назад", unit_days:"дн",
   },
   en: {
     subtitle:"— local dashboard", card_total:"Total tracked", card_active:"Active",
@@ -270,6 +272,8 @@ const I18N = {
     link_removed:"Link removed.",
     st_o_none:"· status", st_o_viewed:"👁 viewed", st_o_called:"📞 called",
     st_o_shortlist:"⭐ shortlist", st_o_rejected:"✖ rejected",
+    d_on_market:"On market", d_last_change:"Last change", d_no_change:"no change yet",
+    days_ago:n=>n===0?"today":n+" d ago", unit_days:"d",
   },
 };
 let LANG = localStorage.getItem("lang") || "ru";
@@ -665,16 +669,28 @@ function renderDetail(id){
   const box=document.getElementById("detail");
   if(id==null){ box.innerHTML=`<h2>${t("h_detail")}</h2><div class="empty">${t("detail_empty")}</div>`; return; }
   const l=LISTINGS.find(x=>x.id===id); if(!l) return;
-  const tracked = l.first_seen_at ? Math.max(0, Math.round((Date.now()-Date.parse(l.first_seen_at))/86400000)) : "—";
+  const onMarket = l.days_on_market==null ? "—" : l.days_on_market+" "+t("unit_days");
   const status = l.status==="delisted" ? t("status_delisted") : t("status_active");
   box.innerHTML=`<h2>${t("h_detail")} — ${label(l)}</h2>
     <dl><dt>${t("d_current")}</dt><dd>${rub(l.current_price)}</dd>
     <dt>${t("d_minmax")}</dt><dd>${rub(l.min_price)} / ${rub(l.max_price)}</dd>
     <dt>${t("d_changes")}</dt><dd>${l.change_count}</dd>
-    <dt>${t("d_tracked")}</dt><dd>${tracked}</dd>
+    <dt>${t("d_last_change")}</dt><dd>${lastChangeText(l.last_change)}</dd>
+    <dt>${t("d_on_market")}</dt><dd>${onMarket}</dd>
     <dt>${t("d_delta")}</dt><dd>${pct(l.delta_total_pct)}</dd>
     <dt>${t("d_status")}</dt><dd>${status}</dd></dl>
     <p><a href="${l.url}" target="_blank" rel="noopener">${t("d_open")}</a></p>`;
+}
+
+// "−300 000 ₽ (−3.4%), 12 d ago" — the most recent price move, for negotiation
+// context. Coloured like the table's Δ (green = a drop, good for a buyer).
+function lastChangeText(c){
+  if(!c) return `<span class="muted">${t("d_no_change")}</span>`;
+  const days = Math.max(0, Math.round((Date.now()-Date.parse(c.at))/86400000));
+  const cls = c.amount<0 ? "down" : (c.amount>0 ? "up" : "");
+  const amt = (c.amount>0?"+":"−")+new Intl.NumberFormat("ru-RU").format(Math.abs(c.amount))+" ₽";
+  const pctPart = c.percent==null ? "" : ` (${pct(c.percent)})`;
+  return `<span class="${cls}">${amt}${pctPart}</span>, ${t("days_ago")(days)}`;
 }
 
 async function addTracked(){
